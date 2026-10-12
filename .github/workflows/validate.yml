@@ -1,0 +1,16 @@
+name: Validate static app
+on:
+  push:
+  pull_request:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required files and accidental remote dependencies
+        run: |
+          test -f index.html
+          test -f README.md
+          test -f docs/ANALYTICAL_METHOD.md
+          ! grep -E '<script[^>]+src="https?://|<link[^>]+href="https?://' index.html
+          grep -q '<!doctype html>' index.html
