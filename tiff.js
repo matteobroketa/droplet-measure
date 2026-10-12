@@ -176,7 +176,7 @@
     if (marker !== 0x4949 && marker !== 0x4d4d) fail('This file is not a TIFF image.');
     const little = marker === 0x4949;
     const magic = view.getUint16(2, little);
-    if (magic === 43) fail('BigTIFF is not supported yet. Export this image as PNG or JPEG and try again.');
+    if (magic === 43) fail('BigTIFF is not supported yet. Re-export as classic TIFF or OME-TIFF in a supported sample format, preserving bit depth with lossless compression.');
     if (magic !== 42) fail('The TIFF header has an unsupported format.');
 
     let ifdOffset = view.getUint32(4, little);
@@ -197,12 +197,12 @@
     const bitsRaw = values(fields, TAG.bitsPerSample, [1]);
     const bits = bitsRaw.length === 1 ? Array(samples).fill(bitsRaw[0]) : bitsRaw;
     if (bits.length !== samples || bits.some(value => ![8, 16, 32].includes(value)) || bits.some(value => value !== bits[0])) {
-      fail('This TIFF uses unsupported sample bit depths. Export it as an 8-bit PNG or JPEG and try again.');
+      fail('This TIFF uses an unsupported sample bit depth. Re-export as a lossless 8-bit or 16-bit classic TIFF/OME-TIFF.');
     }
     const formatsRaw = values(fields, TAG.sampleFormat, [1]);
     const formats = formatsRaw.length === 1 ? Array(samples).fill(formatsRaw[0]) : formatsRaw;
     if (formats.length !== samples || formats.some(value => ![1, 2, 3].includes(value)) || formats.some(value => value !== formats[0])) {
-      fail('This TIFF uses an unsupported sample format. Export it as PNG or JPEG and try again.');
+      fail('This TIFF uses an unsupported sample format. Re-export as a lossless integer or Float32 classic TIFF/OME-TIFF supported by this app.');
     }
     const compression = one(fields, TAG.compression, 1);
     const photometric = one(fields, TAG.photometric, 1);
@@ -349,7 +349,7 @@
   }
 
   async function inflate(input, expected) {
-    if (typeof DecompressionStream !== 'function') fail('This browser cannot decompress this TIFF. Export it as PNG or JPEG and try again.');
+    if (typeof DecompressionStream !== 'function') fail('This browser cannot decompress this TIFF. Re-export using uncompressed, PackBits, LZW, or Deflate TIFF compression.');
     const formats = ['deflate', 'deflate-raw'];
     let lastError;
     for (const format of formats) {
@@ -387,7 +387,7 @@
     if (compression === 32773) return packBits(input, expected);
     if (compression === 5) return lzw(input, expected);
     if (compression === 8 || compression === 32946) return inflate(input, expected);
-    fail(`This TIFF uses unsupported compression (${compression}). Export it as PNG or JPEG and try again.`);
+    fail(`This TIFF uses unsupported compression (${compression}). Re-export using uncompressed, PackBits, LZW, or Deflate TIFF compression.`);
   }
 
   function segments(meta) {
@@ -677,10 +677,10 @@
     const formatsRaw = scientificArray(fields, TAG.sampleFormat, [1]);
     const formats = formatsRaw.length === 1 ? Array(samples).fill(formatsRaw[0]) : formatsRaw;
     if (bits.length !== samples || bits.some(value => ![8, 16, 32].includes(value)) || bits.some(value => value !== bits[0])) {
-      fail('This TIFF uses unsupported sample bit depths. Export this image as an 8-bit PNG or JPEG and try again.');
+      fail('This TIFF uses an unsupported sample bit depth. Re-export as a lossless 8-bit or 16-bit classic TIFF/OME-TIFF.');
     }
     if (formats.length !== samples || formats.some(value => ![1, 2, 3].includes(value)) || formats.some(value => value !== formats[0])) {
-      fail('This TIFF uses an unsupported sample format. Export this image as PNG or JPEG and try again.');
+      fail('This TIFF uses an unsupported sample format. Re-export as a lossless integer or Float32 classic TIFF/OME-TIFF supported by this app.');
     }
     const compression = one(fields, TAG.compression, 1);
     const photometric = one(fields, TAG.photometric, 1);
@@ -735,7 +735,7 @@
     if (marker !== 0x4949 && marker !== 0x4d4d) fail('This file is not a TIFF image.');
     const little = marker === 0x4949;
     const magic = view.getUint16(2, little);
-    if (magic === 43) fail('BigTIFF is not supported yet. Export this image as PNG or JPEG and try again.');
+    if (magic === 43) fail('BigTIFF is not supported yet. Re-export as classic TIFF or OME-TIFF in a supported sample format, preserving bit depth with lossless compression.');
     if (magic !== 42) fail('The TIFF header has an unsupported format.');
     let offset = view.getUint32(4, little);
     const seen = new Set();

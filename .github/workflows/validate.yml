@@ -2,15 +2,23 @@ name: Validate static app
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
       - name: Check required files and accidental remote dependencies
         run: |
           test -f index.html
           test -f tiff.js
+          test -f analysis-core.js
+          test -f build-info.js
           test -f README.md
           test -f docs/ANALYTICAL_METHOD.md
           ! grep -E '<script[^>]+src="https?://|<link[^>]+href="https?://' index.html
@@ -18,6 +26,8 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check tiff.js
+          node --check analysis-core.js
+          node --check build-info.js
           node --check app.js
       - name: Check JavaScript entrypoints
         run: |
@@ -25,7 +35,7 @@ jobs:
           const fs = require('node:fs');
           const html = fs.readFileSync('index.html', 'utf8');
 
-          for (const file of ['tiff.js', 'app.js']) {
+          for (const file of ['tiff.js', 'analysis-core.js', 'build-info.js', 'app.js']) {
             if (!fs.existsSync(file)) {
               throw new Error(`Missing file: ${file}`);
             }
@@ -36,3 +46,9 @@ jobs:
 
           console.log('JavaScript entrypoints: OK');
           NODE
+      - name: Install test dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run scientific and browser regression tests
+        run: npm test

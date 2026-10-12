@@ -18,7 +18,7 @@ A TIFF with multiple pages but no reliable axis metadata is intentionally ambigu
 
 ## Channel behavior
 
-Single-channel files use their only source channel directly. The obsolete `To Gray / Red / Green / Blue` analysis selector is not used for scientific files. Multichannel datasets show names, source IDs, role mapping, a detection radio button, measurement checkboxes, and independent display controls. All valid source channels are selected for measurement by default.
+Single-channel files use their only source channel directly. The obsolete `To Gray / Red / Green / Blue` analysis selector is not used for scientific files. Multichannel datasets show names, source IDs, role mapping, a detection radio button, measurement checkboxes, and one canonical independent display control. All valid source channels are selected for measurement by default.
 
 Brightfield/phase/transmitted names suggest the detection channel but do not force it. GFP/RFP/fluorophore metadata suggests role and display LUT only. A detection channel is measured as a raw channel too, without automatically calling it fluorescence. Fluorescence channels expose an editable fluorophore label for provenance; the label is metadata, not spectral unmixing.
 
@@ -26,13 +26,13 @@ RGB PNG/JPEG and standard RGB TIFF are represented as one explicitly labelled **
 
 A single grayscale TIFF page with multiple non-alpha samples exposes those samples as unnamed channels. A grayscale+alpha page excludes the tagged alpha sample and records that decision. A multipage file whose pages themselves contain multiple samples remains blocked when metadata is absent, because the page/sample relationship cannot be safely guessed.
 
-The advanced **Add separate channel** action is only for files saved separately. It requires a single-plane, dimension-matched file and an explicit user confirmation that the coordinate systems are believed aligned. Equal dimensions alone do not prove registration; the warning is recorded in results provenance.
+The advanced **Add separate channel** action is only for files saved separately. It requires a single-plane, dimension-matched file and an explicit in-app acknowledgment that the coordinate systems are believed aligned. Equal dimensions alone do not prove registration; the warning is recorded in results provenance. Multichannel input also surfaces a registration-review warning unless the loader has explicit registration evidence.
 
 ## Raw measurements
 
-The detector may operate on a temporary 8-bit, performance-scaled representation. Quantification never does. For each selected channel, original typed samples inside the documented `0.72 × radius` inner-circle ROI produce `N`, sum, mean, median, min, max, sample standard deviation, invalid-pixel count, saturation information when the user enters a known per-channel ceiling, and QC flags. TIFF container bit depth is not silently used as a camera saturation ceiling. CSV fields are channel-qualified and JSON includes the source pixel type, frame, channel metadata, ROI method, settings, mapping provenance, and warnings.
+The detector may operate on a temporary 8-bit, isotropically performance-scaled representation. Quantification never does. Review modes expose the selected binary mask, equivalent-circle outline, and actual `0.72 × radius` measurement ROI. For each selected channel, original typed samples inside that ROI produce `N`, sum, mean, median, min, max, sample standard deviation, invalid-pixel count, saturation information when the user enters a known per-channel ceiling, and QC flags. TIFF container bit depth is not silently used as a camera saturation ceiling. CSV fields use stable channel IDs and include source/frame/method/build provenance; JSON includes source pixel type, frame, channel metadata, ROI method, settings, mapping provenance, selected segmentation method, and warnings. Zero-candidate runs produce an empty JSON report and header-only CSV.
 
-Results are invalidated when the detection source, frame, or detection settings change. Display channel, composite view, contrast cache, zoom, and overlay visibility do not alter measurements. CSV/JSON exports include excluded candidates but are disabled while the displayed result set is stale.
+Results are invalidated when the detection source, frame, or detection settings change. Measurement jobs snapshot measured channels and saturation ceilings and do not publish partial results if configuration changes. Review state is keyed by dataset, detection channel, Z, and T. Display channel, composite view, contrast cache, zoom, and overlay visibility do not alter measurements. CSV/JSON exports include excluded candidates but are disabled while the displayed result set is stale. Batch mode uses one frozen recipe, exact channel-ID/role preflight, per-file outcomes, cancellation between files, a tidy CSV, and a JSON manifest.
 
 ## Supported local TIFF scope
 

@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "scripts": {
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:e2e": "playwright test",
+    "test:unit": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0"
+  }
+}

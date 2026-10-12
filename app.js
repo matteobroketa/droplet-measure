@@ -10,13 +10,14 @@
   };
   const ictx = els.image.getContext('2d', {willReadFrequently: true});
   const octx = els.overlay.getContext('2d');
+  const analysisCore = window.DropletMeasureCore;
   const MAX_DISPLAY_SIDE = 4096;
   const MAX_DISPLAY_PIXELS = 12000000;
-  const ROI_RADIUS_FRACTION = 0.72;
+  const ROI_RADIUS_FRACTION = analysisCore.ROI_RADIUS_FRACTION;
   const state = {
-    images: [], index: -1, busy: false, activeJob: 0, detectTimer: null, pendingDetect: false,
+    images: [], index: -1, busy: false, jobPhase: null, activeJob: 0, detectTimer: null, pendingDetect: false, pendingRemeasure: false, batch: null, lastBatchReport: [],
     tool: 'pan', drag: null, calibration: null, measure: null, selectedDropletId: null,
-    view: {zoom: 1, x: 0, y: 0, overlay: true}, display: {scale: 1, width: 0, height: 0}
+    view: {zoom: 1, x: 0, y: 0, overlay: true, overlayMode: 'outline'}, display: {scale: 1, width: 0, height: 0}
   };
 
   const channelLabels = {brightfield: 'Brightfield', fluorescence: 'Fluorescence', reference: 'Reference', other: 'Other', unknown: 'Unknown', 'color-component': 'Color component'};
@@ -98,7 +99,7 @@
       id: dataset.id, file, name: file.name, url: dataset.previewUrl || '', dataset, width: dataset.width, height: dataset.height,
       channels, detectionChannelId: detection, displayChannelId: detection, measuredChannelIds: channels.map(channel => channel.id),
       selectedFrame: {z: 0, t: 0}, mappingResolved: !dataset.ambiguous && dataset.mappingValid !== false, detections: [], measurementRows: {}, analyzed: false,
-      stale: false, analysisRevision: 0, lastCompletedRevision: 0, reviewArchive: [], warnings: [...(dataset.provenance?.warnings || [])],
+      stale: false, analysisRevision: 0, lastCompletedRevision: 0, completedConfigKey: null, detectionReviewKey: null, detectionRecipeHash: null, reviewArchive: [], warnings: [...(dataset.provenance?.warnings || [])],
       calibration: dataset.pixelSizeUm?.x && dataset.pixelSizeUm?.y ? {xUmPerPx: dataset.pixelSizeUm.x, yUmPerPx: dataset.pixelSizeUm.y, source: 'metadata'} : null,
       settings: {minDiameterPx: 20, maxDiameterPx: 400, minCircularity: .65, smoothing: 2, polarity: 'auto', autoThreshold: true, threshold: 128},
       displayRanges: {}, externalChannels: [], colorComponents: [], intensityChannelId: detection, selectedDropletId: null
@@ -126,19 +127,19 @@
 
     const oldChannelField = $('#channelSelect')?.closest('.field');
     if (oldChannelField) {
-      oldChannelField.innerHTML = '<label><span>Display channel</span><span id="displayChannelStatus" class="mono">—</span></label><select id="displayChannelSelect" class="viewer-select"></select><div class="help">View selection changes only the preview. Detection and measurements keep their own source channel.</div>';
+      oldChannelField.remove();
     }
     const oldHelp = detectionCard?.querySelector('.help:last-child');
     if (oldHelp) oldHelp.textContent = 'Choose the channel with the clearest droplet boundaries. Detection uses this channel only; raw intensity statistics are calculated separately from each selected source plane.';
 
-    const status = document.createElement('div'); status.id = 'resultStatus'; status.className = 'result-status'; status.textContent = 'No dataset loaded';
+    const status = document.createElement('div'); status.id = 'resultStatus'; status.className = 'result-status'; status.tabIndex = -1; status.textContent = 'No dataset loaded';
     $('.side.right .section-title')?.after(status);
     const detail = document.createElement('div'); detail.id = 'dropletDetail'; detail.className = 'card detail-card'; detail.hidden = true; detail.innerHTML = '<h4>Selected droplet</h4><div id="detailGrid" class="detail-grid"></div>'; $('#resultBody')?.closest('.table-wrap')?.after(detail);
     const resultControls = document.createElement('div'); resultControls.id = 'resultChannelControls'; resultControls.className = 'row space'; resultControls.style.margin = '8px 0'; resultControls.innerHTML = '<label class="muted" for="summaryChannel" style="font-size:11px">Channel statistics</label><select id="summaryChannel" class="field-input" style="width:auto;max-width:170px"></select>'; $('#histCanvas')?.before(resultControls);
-    const histogramLabel = $('#rangeLabel')?.previousElementSibling; if (histogramLabel) { histogramLabel.id = 'histLabel'; histogramLabel.textContent = 'Intensity distribution'; }
+    const histogramLabel = $('#rangeLabel')?.previousElementSibling; if (histogramLabel) { histogramLabel.id = 'histLabel'; histogramLabel.textContent = 'Included droplet channel means'; }
     const recipeTools = document.createElement('div'); recipeTools.className = 'row'; recipeTools.style.cssText = 'gap:6px;margin-top:8px'; recipeTools.innerHTML = '<button class="btn ghost" id="downloadRecipeBtn" type="button">Download recipe</button><button class="btn ghost" id="applyRecipeBtn" type="button">Apply recipe</button><input id="recipeInput" type="file" accept="application/json,.json" hidden>'; $('#copyBtn')?.parentElement?.after(recipeTools);
 
-    const toggle = document.createElement('button'); toggle.id = 'resultsToggle'; toggle.className = 'btn results-toggle'; toggle.textContent = 'Results'; toggle.setAttribute('aria-expanded', 'false'); $('.top-actions')?.prepend(toggle);
+    const toggle = document.createElement('button'); toggle.id = 'resultsToggle'; toggle.className = 'btn results-toggle'; toggle.textContent = 'Results'; toggle.setAttribute('aria-expanded', 'false'); toggle.setAttribute('aria-controls', 'resultsPanel'); $('.top-actions')?.prepend(toggle); els.right.id = 'resultsPanel';
     const viewer = document.createElement('select'); viewer.id = 'viewerChannelSelect'; viewer.className = 'viewer-select'; viewer.title = 'Display channel'; viewer.setAttribute('aria-label', 'Display channel'); const viewerLabel = document.createElement('span'); viewerLabel.className = 'zoom-label'; viewerLabel.textContent = 'View'; viewerLabel.style.minWidth = 'auto'; const fit = $('#fitBtn'); fit?.before(viewerLabel, viewer);
     const overlayToggle = document.createElement('button'); overlayToggle.id = 'overlayToggle'; overlayToggle.className = 'toolbtn active'; overlayToggle.textContent = 'Overlay'; overlayToggle.title = 'Toggle droplet overlay'; $('#fitBtn')?.before(overlayToggle);
     const reset = document.createElement('button'); reset.id = 'resetDetectionBtn'; reset.className = 'btn ghost block'; reset.textContent = 'Reset detection'; reset.style.marginTop = '8px'; $('#detectBtn')?.after(reset);
@@ -155,6 +156,14 @@
     const step = $('#step3'); if (step) step.classList.toggle('done', Boolean(current()?.analyzed && !current()?.stale));
   }
 
+  function qualityWarnings(session) {
+    const warnings = [...(session.warnings || [])], pixelSize = session.dataset.pixelSizeUm;
+    if (pixelSize?.x && pixelSize?.y && Math.max(pixelSize.x, pixelSize.y) / Math.min(pixelSize.x, pixelSize.y) > 1.05) warnings.push('Pixel size differs by more than 5% between X and Y; equivalent-circle calibration uses their geometric mean.');
+    if (allChannels(session).length > 1 && !session.dataset.alignment?.registered) warnings.push('Channel dimensions and shared geometry do not verify optical registration. Inspect alignment before cross-channel interpretation.');
+    if (session.analyzed && session.detections.some(droplet => droplet.flags?.includes('review_reconciliation_required'))) warnings.push('Some exclusion decisions were transferred after segmentation settings changed; review flagged candidates.');
+    return [...new Set(warnings)];
+  }
+
   function renderSummary(session) {
     const box = $('#datasetSummary'); if (!box) return;
     if (!session) { box.hidden = true; return; }
@@ -162,23 +171,25 @@
     const dtype = d.pixelType || 'unknown pixel type';
     const size = `${d.width.toLocaleString()} × ${d.height.toLocaleString()}`;
     const axis = `C=${axes.sizeC} · Z=${axes.sizeZ} · T=${axes.sizeT}`;
-    const warnings = [...new Set(session.warnings || [])];
+    const warnings = qualityWarnings(session);
     box.hidden = false;
     const channelCount = allChannels(session).length;
     const scale = d.pixelSizeUm?.x && d.pixelSizeUm?.y ? `scale ${fmt(d.pixelSizeUm.x, 4)} × ${fmt(d.pixelSizeUm.y, 4)} µm/px` : 'scale not set';
-    box.innerHTML = `<strong title="${htmlEscape(session.name)}">${htmlEscape(session.name)}</strong><span>${htmlEscape(size)} · ${htmlEscape(dtype)} · ${htmlEscape(axis)}</span><span>${channelCount} ${channelCount === 1 ? 'channel' : 'channels'} · ${htmlEscape(d.source.format)} · ${htmlEscape(byteLabel(session.file?.size ?? d.source.sizeBytes))}</span><span>${htmlEscape(scale)} · ${d.provenance?.metadataSource === 'OME-XML' ? 'OME metadata' : 'TIFF/raster metadata'}</span>${d.pixelType !== 'uint8' ? '<span class="status-line ready">Raw typed intensities preserved; preview contrast is display-only.</span>' : ''}${warnings.length ? `<span class="warning">${htmlEscape(warnings[0])}</span>` : ''}`;
+    const blocked = d.ambiguous || d.mappingValid === false, stateLabel = blocked ? 'Review required before analysis' : state.busy && current() === session ? 'Computing' : session.stale ? 'Results need recomputing' : session.analyzed ? 'Complete' : warnings.length ? 'Review needed' : 'Ready';
+    const warningList = warnings.length ? `<details class="warning-list"><summary>${warnings.length} warning${warnings.length === 1 ? '' : 's'}</summary><ul>${warnings.map(warning => `<li>${htmlEscape(warning)}</li>`).join('')}</ul></details>` : '';
+    box.innerHTML = `<strong title="${htmlEscape(session.name)}">${htmlEscape(session.name)}</strong><span>${htmlEscape(size)} · ${htmlEscape(dtype)} · ${htmlEscape(axis)}</span><span>${channelCount} ${channelCount === 1 ? 'channel' : 'channels'} · ${htmlEscape(d.source.format)} · ${htmlEscape(byteLabel(session.file?.size ?? d.source.sizeBytes))}</span><span>${htmlEscape(scale)} · ${d.provenance?.metadataSource === 'OME-XML' ? 'OME metadata' : 'TIFF/raster metadata'}</span><span class="status-line ${blocked || warnings.length ? 'warn' : session.analyzed ? 'ready' : ''}">${stateLabel}</span>${d.pixelType !== 'uint8' ? '<span class="status-line">Source intensities remain separate from display contrast.</span>' : ''}${warningList}`;
   }
 
   function renderQueue() {
     els.queue.replaceChildren();
     state.images.forEach((session, index) => {
-      const button = document.createElement('button'); button.type = 'button'; button.className = `thumb${index === state.index ? ' active' : ''}`; button.disabled = state.busy;
+      const button = document.createElement('button'); button.type = 'button'; button.className = `thumb${index === state.index ? ' active' : ''}`; button.disabled = state.busy || Boolean(state.batch);
       const image = document.createElement('img'); image.alt = `Preview of ${session.name}`; image.src = session.url || session.dataset.previewUrl || ''; const label = document.createElement('span'); label.title = session.name; label.textContent = session.name;
       button.append(image, label); button.onclick = () => selectImage(index); els.queue.append(button);
     });
     $('#imageCounter').textContent = `${state.images.length} image${state.images.length === 1 ? '' : 's'}`;
     $('#step1').classList.toggle('done', state.images.length > 0);
-    $('#batchBtn').disabled = state.images.length < 2 || state.busy;
+    $('#batchBtn').disabled = state.images.length < 2 || state.busy || Boolean(state.batch);
   }
 
   function channelById(session, id) {
@@ -219,7 +230,7 @@
   }
 
   function renderDisplayOptions(session) {
-    const selects = [$('#displayChannelSelect'), $('#viewerChannelSelect'), $('#summaryChannel')].filter(Boolean);
+    const selects = [$('#viewerChannelSelect'), $('#summaryChannel')].filter(Boolean);
     const channels = allChannels(session);
     const options = channels.map(channel => `<option value="${htmlEscape(channel.id)}">${htmlEscape(channel.displayName)}${channel.role === 'color-component' ? ' · color' : ''}</option>`).join('');
     const composite = channels.length > 1 ? '<option value="composite">Composite</option>' : '';
@@ -228,8 +239,6 @@
       if ([...select.options].some(option => option.value === (select.id === 'summaryChannel' ? session.intensityChannelId : session.displayChannelId))) select.value = select.id === 'summaryChannel' ? session.intensityChannelId : session.displayChannelId;
       else if ([...select.options].some(option => option.value === prior)) select.value = prior;
     });
-    $('#displayChannelSelect').disabled = channels.length <= 1;
-    $('#displayChannelStatus').textContent = channels.length <= 1 ? 'Channel 1' : channelById(session, session.displayChannelId)?.displayName || '—';
     $('#channelSummary').textContent = `${channels.length} available`;
   }
 
@@ -275,7 +284,7 @@
       session.measuredChannelIds = allChannels(session).filter(channel => $(`[data-quantify="${channel.id}"]`)?.checked).map(channel => channel.id);
       if (!session.measuredChannelIds.includes(session.detectionChannelId)) session.measuredChannelIds.push(session.detectionChannelId);
       renderChannelMap(session);
-      if (session.analyzed && !session.stale) remeasureCurrent(); else updateResults();
+      measurementConfigChanged(session);
     });
     $$('[data-saturation]').forEach(input => input.onchange = () => {
       const channel = channelById(session, input.dataset.saturation);
@@ -284,7 +293,7 @@
       if (value !== null && (!Number.isFinite(value) || value < 0)) { input.value = saturationText(channel); return toast('Enter a non-negative saturation ceiling.', 'error'); }
       channel.saturationLevel = value;
       renderChannelMap(session);
-      if (session.analyzed && !session.stale) remeasureCurrent(); else updateResults();
+      measurementConfigChanged(session);
     });
     $$('[data-view]').forEach(button => button.onclick = () => { session.displayChannelId = button.dataset.view; renderDisplayOptions(session); renderCurrentImage(); renderOverlay(); });
     $$('[data-color-components]').forEach(button => button.onclick = () => enableColorComponents(session));
@@ -363,7 +372,7 @@
     if (session.dataset.ambiguous) showPhase('Page mapping required before detection', 'warn'); else if (session.dataset.mappingValid === false) showPhase('Metadata mapping is incomplete · detection blocked', 'error'); else if (session.analyzed && !session.stale) showPhase(`${session.detections.length} candidates · ${session.measuredChannelIds.length} channel${session.measuredChannelIds.length === 1 ? '' : 's'} quantified`, 'ready'); else showPhase('Ready to detect', '');
   }
 
-  function selectImage(index) { if (index === state.index) return; if (state.busy) return toast('Wait for the current analysis to finish'); loadCurrent(index); }
+  function selectImage(index) { if (index === state.index) return; if (state.batch) return toast('Image selection is locked during batch analysis'); if (state.busy) return toast('Wait for the current analysis to finish'); loadCurrent(index); }
 
   function frameKey(session, channelId = session.displayChannelId, frame = session.selectedFrame) {
     return `${channelId}:${frame.z}:${frame.t}`;
@@ -498,6 +507,17 @@
     return {x: ((event.clientX - rect.left - state.view.x) / state.view.zoom) / sx, y: ((event.clientY - rect.top - state.view.y) / state.view.zoom) / sy};
   }
 
+  function makeMaskCanvas(mask, width, height) {
+    if (!mask) return null;
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d'), image = context.createImageData(width, height);
+    for (let index = 0; index < mask.length; index++) if (mask[index]) {
+      const offset = index * 4; image.data[offset] = 255; image.data[offset + 1] = 189; image.data[offset + 2] = 95; image.data[offset + 3] = 145;
+    }
+    context.putImageData(image, 0, 0);
+    return canvas;
+  }
+
   function renderOverlay() {
     const session = current();
     if (!session || !state.display.width) return;
@@ -505,8 +525,10 @@
     octx.clearRect(0, 0, state.display.width, state.display.height);
     if (!state.view.overlay) return;
     const lineWidth = Math.max(1.25 / state.view.zoom, 1);
-    for (const droplet of session.detections) {
-      const x = droplet.x * sx, y = droplet.y * sy, radius = droplet.radiusPx * Math.min(sx, sy);
+    const mode = state.view.overlayMode;
+    if (mode === 'binary-mask' && session.segmentationMaskCanvas) octx.drawImage(session.segmentationMaskCanvas, 0, 0, state.display.width, state.display.height);
+    if (mode !== 'binary-mask') for (const droplet of session.detections) {
+      const x = droplet.x * sx, y = droplet.y * sy, fraction = mode === 'measurement-roi' ? ROI_RADIUS_FRACTION : 1, radius = droplet.radiusPx * fraction * Math.min(sx, sy);
       octx.beginPath(); octx.arc(x, y, radius, 0, Math.PI * 2); octx.lineWidth = lineWidth;
       octx.strokeStyle = droplet.excluded ? 'rgba(255,120,130,.65)' : droplet.id === session.selectedDropletId ? '#ffd37a' : 'rgba(103,208,184,.92)'; octx.stroke();
       if (state.view.zoom > .45) { octx.fillStyle = octx.strokeStyle; octx.font = `${Math.max(10 / state.view.zoom, 7)}px ui-monospace`; octx.fillText(String(droplet.id), x + radius + 3 / state.view.zoom, y); }
@@ -529,11 +551,10 @@
 
   function promptPixelSize() {
     const session = current(); if (!session) return;
-    const value = prompt('Pixel size in µm/pixel:', session.calibration?.xUmPerPx || session.dataset.pixelSizeUm?.x || '');
-    if (value === null) return;
-    const number = Number(value);
-    if (!Number.isFinite(number) || number <= 0) return toast('Enter a positive pixel size', 'error');
-    session.calibration = {xUmPerPx: number, yUmPerPx: number, source: 'user'}; updateScaleUi(); updateResults(); renderOverlay(); toast('Scale updated');
+    const dialog = $('#calibrationDialog'); dialog.dataset.mode = 'pixel-size'; dialog.dataset.distancePx = '';
+    $('#calibrationTitle').textContent = 'Set pixel calibration'; $('#calibrationPrompt').textContent = 'Enter the known physical length of one source pixel.';
+    $('#calibrationValueLabel').textContent = 'Micrometers per pixel'; $('#calibrationValue').value = session.calibration?.xUmPerPx || session.dataset.pixelSizeUm?.x || '';
+    dialog.showModal(); $('#calibrationValue').focus();
   }
 
   function startCalibration() { if (!current()) return; state.calibration = {start: null, end: null}; setTool('calibrate'); toast('Drag over a known distance'); }
@@ -543,13 +564,31 @@
     if (!session || !calibration?.start || !calibration?.end) return;
     const pixels = Math.hypot(calibration.end.x - calibration.start.x, calibration.end.y - calibration.start.y);
     if (pixels < 2) { state.calibration = null; setTool('pan'); return; }
-    const value = prompt(`Line length: ${fmt(pixels, 1)} px. Enter known distance in µm:`);
-    if (value !== null) {
-      const number = Number(value);
-      if (Number.isFinite(number) && number > 0) { session.calibration = {xUmPerPx: number / pixels, yUmPerPx: number / pixels, source: 'user'}; updateScaleUi(); updateResults(); toast('Calibration saved'); }
-      else toast('Enter a positive distance', 'error');
-    }
+    const dialog = $('#calibrationDialog'); dialog.dataset.mode = 'line-distance'; dialog.dataset.distancePx = String(pixels);
+    $('#calibrationTitle').textContent = 'Calibrate from line'; $('#calibrationPrompt').textContent = `The drawn line is ${fmt(pixels, 1)} source pixels long.`;
+    $('#calibrationValueLabel').textContent = 'Known line length (µm)'; $('#calibrationValue').value = '';
+    dialog.showModal(); $('#calibrationValue').focus();
     state.calibration = null; setTool('pan');
+  }
+
+  function saveCalibration() {
+    const input = $('#calibrationValue'), number = Number(input.value), dialog = $('#calibrationDialog');
+    if (!Number.isFinite(number) || number <= 0) { input.setCustomValidity('Enter a positive distance.'); input.reportValidity(); return; }
+    input.setCustomValidity('');
+    const distancePx = Number(dialog.dataset.distancePx);
+    const scale = dialog.dataset.mode === 'line-distance' ? number / distancePx : number;
+    const session = current(); if (!session || !Number.isFinite(scale) || scale <= 0) return;
+    session.calibration = {xUmPerPx: scale, yUmPerPx: scale, source: 'user'};
+    updateScaleUi(); updateResults(); renderOverlay(); dialog.close(); toast('Calibration saved');
+  }
+
+  function confirmExternalAlignment(fileName) {
+    const dialog = $('#registrationDialog');
+    $('#registrationMessage').textContent = `Dimensions match for ${fileName}, but matching dimensions do not prove registration. Attach as unverified?`;
+    return new Promise(resolve => {
+      dialog.addEventListener('close', () => resolve(dialog.returnValue === 'acknowledge'), {once: true});
+      dialog.showModal();
+    });
   }
 
   function setTool(tool) {
@@ -618,7 +657,7 @@
         }
       }
       if (area >= minArea && area <= maxArea && !border) {
-        const circularity = perimeter ? Math.min(1, 4 * Math.PI * area / (perimeter * perimeter) * 1.12) : 0;
+        const circularity = analysisCore.circularity(area, perimeter);
         candidates.push({area, circularity, x: sumX / area, y: sumY / area, bbox: [minX, minY, maxX, maxY], diameter: 2 * Math.sqrt(area / Math.PI)});
       }
     }
@@ -633,7 +672,7 @@
     const mask = new Uint8Array(gray.length), dark = polarity === 'dark';
     for (let index = 0; index < gray.length; index++) mask[index] = dark ? gray[index] < threshold : gray[index] > threshold;
     const minArea = Math.max(1, Math.PI * (minDiameter / 2) ** 2 * .15), maxArea = Math.PI * (maxDiameter / 2) ** 2 * 2.5;
-    return filterCandidates(components(mask, width, height, minArea, maxArea), minDiameter, maxDiameter, minCircularity);
+    return {candidates: filterCandidates(components(mask, width, height, minArea, maxArea), minDiameter, maxDiameter, minCircularity), mask};
   }
 
   function analyzeAdaptive(gray, width, height, polarity, minDiameter, maxDiameter, minCircularity) {
@@ -644,7 +683,7 @@
     const delta = Math.max(4, Math.min(24, Math.round(otsu(contrast) * .55))), mask = new Uint8Array(gray.length), dark = polarity === 'dark';
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) { const index = y * width + x, mean = localMean(x, y); mask[index] = dark ? gray[index] < mean - delta : gray[index] > mean + delta; }
     const minArea = Math.max(1, Math.PI * (minDiameter / 2) ** 2 * .15), maxArea = Math.PI * (maxDiameter / 2) ** 2 * 2.5;
-    return filterCandidates(components(mask, width, height, minArea, maxArea), minDiameter, maxDiameter, minCircularity);
+    return {candidates: filterCandidates(components(mask, width, height, minArea, maxArea), minDiameter, maxDiameter, minCircularity), mask};
   }
 
   function candidateScore(candidates, minDiameter) {
@@ -653,37 +692,66 @@
   }
 
   function detectCandidates(session, plane, channelId) {
-    const maxSide = 1400, scaleX = Math.min(1, maxSide / plane.width), scaleY = Math.min(1, maxSide / plane.height), width = Math.max(1, Math.round(plane.width * scaleX)), height = Math.max(1, Math.round(plane.height * scaleY));
+    const {width, height, scaleX, scaleY} = analysisCore.detectionSize(plane.width, plane.height);
     const gray = blur(rawPlaneToGray(plane, session, channelId, width, height), width, height, session.settings.smoothing);
     const threshold = session.settings.autoThreshold ? otsu(gray) : session.settings.threshold;
     const minDiameter = session.settings.minDiameterPx * Math.sqrt(scaleX * scaleY), maxDiameter = session.settings.maxDiameterPx * Math.sqrt(scaleX * scaleY), minCircularity = session.settings.minCircularity;
-    let polarity = session.settings.polarity, candidates;
+    let polarity = session.settings.polarity, candidates, mask, method;
     if (polarity === 'auto') {
-      const choices = ['dark', 'bright'].flatMap(value => [{items: analyzePolarity(gray, width, height, threshold, value, minDiameter, maxDiameter, minCircularity), polarity: value}, {items: analyzeAdaptive(gray, width, height, value, minDiameter, maxDiameter, minCircularity), polarity: value}]);
-      const best = choices.reduce((a, b) => candidateScore(b.items, minDiameter) > candidateScore(a.items, minDiameter) ? b : a, choices[0]);
-      candidates = best.items; polarity = best.polarity;
+      const choices = ['dark', 'bright'].flatMap(value => [{analysis: analyzePolarity(gray, width, height, threshold, value, minDiameter, maxDiameter, minCircularity), polarity: value, method: 'global'}, {analysis: analyzeAdaptive(gray, width, height, value, minDiameter, maxDiameter, minCircularity), polarity: value, method: 'adaptive'}]);
+      const best = choices.reduce((a, b) => candidateScore(b.analysis.candidates, minDiameter) > candidateScore(a.analysis.candidates, minDiameter) ? b : a, choices[0]);
+      candidates = best.analysis.candidates; mask = best.analysis.mask; polarity = best.polarity; method = best.method;
     } else {
-      candidates = analyzePolarity(gray, width, height, threshold, polarity, minDiameter, maxDiameter, minCircularity);
-      if (!candidates.length) candidates = analyzeAdaptive(gray, width, height, polarity, minDiameter, maxDiameter, minCircularity);
+      let analysis = analyzePolarity(gray, width, height, threshold, polarity, minDiameter, maxDiameter, minCircularity);
+      method = 'global';
+      if (!analysis.candidates.length) { analysis = analyzeAdaptive(gray, width, height, polarity, minDiameter, maxDiameter, minCircularity); method = 'adaptive'; }
+      candidates = analysis.candidates; mask = analysis.mask;
     }
-    return {candidates, threshold, polarity, source: {width: plane.width, height: plane.height, scaledWidth: width, scaledHeight: height, scaleX, scaleY, channelId}};
+    let grayMin = 255, grayMax = 0;
+    for (const value of gray) { grayMin = Math.min(grayMin, value); grayMax = Math.max(grayMax, value); }
+    return {candidates, threshold, polarity, method, mask, maskWidth: width, maskHeight: height, contrastRange: [grayMin, grayMax], source: {width: plane.width, height: plane.height, scaledWidth: width, scaledHeight: height, scaleX, scaleY, channelId}};
   }
 
-  function stableMergeDetections(previous, candidates, source, archive = []) {
-    const pool = [...previous, ...archive], used = new Set(), matchedArchiveIds = new Set(), next = [], unmatched = [], nextId = () => Math.max(0, ...pool.map(item => Number(item.id) || 0), ...next.map(item => Number(item.id) || 0)) + 1;
+  function stableMergeDetections(previous, candidates, source, archive = [], recipeHash = null) {
+    const pool = [...previous, ...archive], used = new Set(), matchedArchive = new Set(), next = [], unmatched = [], nextId = () => Math.max(0, ...pool.map(item => Number(item.id) || 0), ...next.map(item => Number(item.id) || 0)) + 1;
     for (const candidate of candidates) {
       const x = candidate.x / source.scaleX, y = candidate.y / source.scaleY, radiusPx = candidate.diameter / (2 * Math.sqrt(source.scaleX * source.scaleY));
       let best = null, distance = Infinity;
       for (const old of pool) {
-        if (used.has(old.id)) continue;
+        if (used.has(old)) continue;
         const allowed = Math.max(5, radiusPx * .8), ratio = radiusPx / Math.max(1, old.radiusPx || old.radius || 1), currentDistance = Math.hypot(x - old.x, y - old.y);
         if (currentDistance <= allowed && ratio > .5 && ratio < 2 && currentDistance < distance) { best = old; distance = currentDistance; }
       }
-      if (best) { used.add(best.id); if (archive.includes(best)) matchedArchiveIds.add(best.id); }
-      next.push({id: best?.id ?? nextId(), x, y, radiusPx, diameterPx: candidate.diameter / Math.sqrt(source.scaleX * source.scaleY), circularity: Math.min(1, candidate.circularity), excluded: Boolean(best?.excluded), flags: [], roi: {kind: 'inner-circle', radiusFraction: ROI_RADIUS_FRACTION, sourceCoordinateSpace: 'original-pixels'}, measurements: {}});
+      if (best) { used.add(best); if (archive.includes(best)) matchedArchive.add(best); }
+      const flags = best?.recipeHash && best.recipeHash !== recipeHash ? ['review_reconciliation_required'] : [];
+      next.push({id: best?.id ?? nextId(), x, y, radiusPx, diameterPx: candidate.diameter / Math.sqrt(source.scaleX * source.scaleY), circularity: Math.min(1, candidate.circularity), excluded: Boolean(best?.excluded), flags, recipeHash, roi: {kind: 'inner-circle', radiusFraction: ROI_RADIUS_FRACTION, sourceCoordinateSpace: 'original-pixels'}, measurements: {}});
     }
-    for (const old of previous) if (!used.has(old.id)) unmatched.push(old);
-    return {detections: next, unmatched, matchedArchiveIds};
+    for (const old of previous) if (!used.has(old)) unmatched.push(old);
+    return {detections: next, unmatched, matchedArchive};
+  }
+
+  function analysisConfig(session) {
+    return {
+      datasetId: session.dataset.id,
+      detectionChannelId: session.detectionChannelId,
+      measuredChannelIds: [...session.measuredChannelIds],
+      saturationLevels: allChannels(session).filter(channel => session.measuredChannelIds.includes(channel.id)).map(channel => [channel.id, finiteCeiling(channel.saturationLevel)]),
+      selectedFrame: {...session.selectedFrame},
+      settings: {...session.settings}
+    };
+  }
+
+  function configKey(config) { return JSON.stringify(config); }
+
+  function reviewFrameKey(session, config) {
+    return JSON.stringify([session.dataset.id, config.detectionChannelId, config.selectedFrame.z, config.selectedFrame.t]);
+  }
+
+  function measurementConfigChanged(session) {
+    markStale(session, 'Measurement settings changed · results need recomputation');
+    if (!session.analyzed && !state.busy) return;
+    if (state.busy) { if (state.jobPhase === 'remeasure') state.pendingRemeasure = true; else state.pendingDetect = true; return; }
+    remeasureCurrent();
   }
 
   function markStale(session, message = 'Results stale · run detection again') {
@@ -694,7 +762,7 @@
 
   function requestDetect(delay = 140) {
     const session = current(); if (!session || !session.mappingResolved) return;
-    if (!session.analyzed) return;
+    if (!session.analyzed && !state.busy) return;
     state.activeJob++; session.stale = true; session.analysisRevision++;
     if (state.detectTimer) clearTimeout(state.detectTimer);
     state.detectTimer = setTimeout(() => { state.detectTimer = null; detect(); }, delay);
@@ -707,26 +775,45 @@
     if (session.dataset.alignment && !session.dataset.alignment.valid) return toast(session.dataset.alignment.reason || 'The selected planes are not spatially aligned.', 'error');
     if (state.busy) { state.pendingDetect = true; return; }
     syncSettingsFromUi(session);
+    const config = analysisConfig(session), expectedConfigKey = configKey(config);
     const job = ++state.activeJob, revision = session.analysisRevision + 1;
-    session.analysisRevision = revision; state.busy = true; session.stale = true; renderQueue();
-    $('#detectBtn').disabled = true; $('#detectBtn').textContent = 'Detecting…'; els.workspace.classList.add('is-analyzing'); els.workspace.setAttribute('aria-busy', 'true'); showPhase('Detecting droplets…', 'busy');
+    session.analysisRevision = revision; state.busy = true; state.jobPhase = 'detect'; session.stale = true; renderQueue();
+    $('#detectBtn').disabled = true; $('#detectBtn').textContent = 'Detecting…'; els.workspace.setAttribute('aria-busy', 'true'); showPhase('Detecting droplets…', 'busy');
     await tick();
     try {
-      const plane = getPlane(session, session.detectionChannelId), result = detectCandidates(session, plane, session.detectionChannelId);
-      if (job !== state.activeJob || session !== current()) return;
-      const archiveKey = `${session.detectionChannelId}:${session.selectedFrame.z}:${session.selectedFrame.t}`, allArchived = session.reviewArchive || [], archive = allArchived.filter(item => !item.archiveKey || item.archiveKey === archiveKey), merged = stableMergeDetections(session.detections, result.candidates, result.source, archive);
-      session.detections = merged.detections; session.reviewArchive = merged.unmatched.map(item => ({...item, archiveKey})).concat(allArchived.filter(item => !merged.matchedArchiveIds.has(item.id))).slice(0, 1000); session.detectionSource = result.source; session.detectedPolarity = result.polarity; session.detectedThreshold = result.threshold;
-      session.lastCompletedRevision = revision; session.stale = false; session.analyzed = true;
-      showPhase('Measuring raw channel planes…', 'busy'); const measured = await quantifySession(session, job);
-      if (!measured || job !== state.activeJob || session !== current()) return;
+      const plane = getPlane(session, config.detectionChannelId, config.selectedFrame), result = detectCandidates({...session, settings: config.settings}, plane, config.detectionChannelId);
+      if (job !== state.activeJob || session !== current() || configKey(analysisConfig(session)) !== expectedConfigKey) return;
+      const archiveKey = reviewFrameKey(session, config), oldReviewKey = session.detectionReviewKey;
+      const displaced = oldReviewKey && oldReviewKey !== archiveKey ? session.detections.map(item => ({...item, archiveKey: oldReviewKey, recipeHash: session.detectionRecipeHash})) : [];
+      const allArchived = [...(session.reviewArchive || []), ...displaced];
+      const previous = oldReviewKey === archiveKey ? session.detections : [];
+      const archive = allArchived.filter(item => item.archiveKey === archiveKey);
+      const recipeHash = JSON.stringify(config.settings), merged = stableMergeDetections(previous, result.candidates, result.source, archive, recipeHash);
+      session.detections = merged.detections;
+      session.reviewArchive = allArchived.filter(item => item.archiveKey !== archiveKey || !merged.matchedArchive.has(item))
+        .concat(merged.unmatched.map(item => ({...item, archiveKey, recipeHash: session.detectionRecipeHash}))).slice(-1000);
+      session.detectionReviewKey = archiveKey; session.detectionRecipeHash = recipeHash;
+      session.detectionSource = result.source; session.detectedPolarity = result.polarity; session.detectedThreshold = result.threshold; session.detectedMethod = result.method;
+      session.segmentationMask = result.mask; session.segmentationMaskWidth = result.maskWidth; session.segmentationMaskHeight = result.maskHeight; session.segmentationMaskCanvas = makeMaskCanvas(result.mask, result.maskWidth, result.maskHeight);
+      session.noDetectionReason = result.candidates.length ? null : result.contrastRange[0] === result.contrastRange[1]
+        ? 'No candidates: the selected detection plane is constant after display-range normalization. Choose another channel or inspect the source image.'
+        : 'No candidates: inspect the selected channel, polarity, threshold, diameter limits, and border-touching-object policy.';
+      session.analyzed = true;
+      showPhase('Measuring raw channel planes…', 'busy'); const measured = await quantifySession(session, job, config);
+      if (!measured || job !== state.activeJob || session !== current() || configKey(analysisConfig(session)) !== expectedConfigKey) return;
+      session.lastCompletedRevision = revision; session.stale = false;
       updateResults(); renderOverlay(); replayClass(els.workspace, 'detection-flash');
-      showPhase(`${session.detections.length} candidates · ${session.measuredChannelIds.length} channel${session.measuredChannelIds.length === 1 ? '' : 's'} quantified`, 'ready');
-      toast(`${session.detections.length} droplets detected · ${result.polarity} segmentation`);
+      showPhase(session.noDetectionReason || `${session.detections.length} candidates · ${session.measuredChannelIds.length} channel${session.measuredChannelIds.length === 1 ? '' : 's'} quantified`, session.noDetectionReason ? 'warn' : 'ready');
+      toast(session.noDetectionReason || `${session.detections.length} droplets detected · ${result.polarity} segmentation`, session.noDetectionReason ? 'warn' : '');
     } catch (error) {
       console.error(error); session.stale = true; showPhase(error?.message || 'Detection failed', 'error'); toast(error?.message || 'Detection failed. Check the selected channel and image.', 'error');
     } finally {
-      state.busy = false; $('#detectBtn').disabled = Boolean(session.dataset.ambiguous || session.dataset.mappingValid === false || (session.dataset.alignment && !session.dataset.alignment.valid)); $('#detectBtn').textContent = 'Detect droplets'; els.workspace.classList.remove('is-analyzing'); els.workspace.removeAttribute('aria-busy'); renderQueue(); updateResults();
-      if (state.pendingDetect || session.analysisRevision !== session.lastCompletedRevision) { state.pendingDetect = false; requestDetect(0); }
+      state.busy = false; state.jobPhase = null; state.pendingRemeasure = false; $('#detectBtn').disabled = Boolean(session.dataset.ambiguous || session.dataset.mappingValid === false || (session.dataset.alignment && !session.dataset.alignment.valid)); $('#detectBtn').textContent = 'Detect droplets'; els.workspace.removeAttribute('aria-busy'); renderQueue(); updateResults();
+      if (state.pendingDetect || session.analysisRevision !== session.lastCompletedRevision) {
+        state.pendingDetect = false;
+        if (state.detectTimer) { clearTimeout(state.detectTimer); state.detectTimer = null; }
+        if (session.analyzed) requestDetect(0); else detect();
+      }
     }
   }
 
@@ -737,58 +824,48 @@
   }
 
   function measurePlane(plane, droplet) {
-    const radius = Math.max(0, droplet.radiusPx * ROI_RADIUS_FRACTION), radiusSquared = radius * radius;
-    const x0 = Math.max(0, Math.floor(droplet.x - radius)), x1 = Math.min(plane.width - 1, Math.ceil(droplet.x + radius)), y0 = Math.max(0, Math.floor(droplet.y - radius)), y1 = Math.min(plane.height - 1, Math.ceil(droplet.y + radius));
-    const values = [], invalidMask = plane.invalidMask; let invalidPixels = 0, saturatedPixels = 0, roiPixelCount = 0, clipped = x0 === 0 || y0 === 0 || x1 === plane.width - 1 || y1 === plane.height - 1;
-    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-      if ((x - droplet.x) ** 2 + (y - droplet.y) ** 2 > radiusSquared) continue;
-      roiPixelCount++;
-      const index = y * plane.width + x, value = Number(plane.values[index]);
-      if (invalidMask?.[index] || !Number.isFinite(value)) invalidPixels++; else { values.push(value); if (Number.isFinite(plane.saturationLevel) && value >= plane.saturationLevel) saturatedPixels++; }
-    }
-    const n = values.length, sum = values.reduce((total, value) => total + value, 0), mean = n ? sum / n : null, sorted = [...values].sort((a, b) => a - b), median = n ? (n % 2 ? sorted[n >> 1] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2) : null;
-    const min = n ? sorted[0] : null, max = n ? sorted[n - 1] : null, standardDeviation = n > 1 ? Math.sqrt(values.reduce((total, value) => total + (value - mean) ** 2, 0) / (n - 1)) : null;
-    const flags = [];
-    if (clipped) flags.push('border_roi_clipped');
-    if (radius < 2) flags.push('small_roi');
-    if (invalidPixels) flags.push('invalid_pixels');
-    if (!n) flags.push('empty_roi');
-    const saturationLevel = plane.saturationLevel;
-    if (!Number.isFinite(saturationLevel)) flags.push('saturation_not_assessed');
-    if (saturatedPixels) flags.push('saturated_pixels');
-    return {channelId: plane.channelId, nPixels: n, roiPixelCount, invalidPixels, rawSum: n ? sum : null, rawMean: mean, rawMedian: median, rawMin: min, rawMax: max, rawStdDev: standardDeviation, rawStddev: standardDeviation, saturationLevel: Number.isFinite(saturationLevel) ? saturationLevel : null, saturatedPixels, saturatedFraction: n ? saturatedPixels / n : null, flags, roi: {kind: 'inner-circle', radiusFraction: ROI_RADIUS_FRACTION, centerX: droplet.x, centerY: droplet.y, radiusPx: radius, sourceCoordinateSpace: 'original-pixels'}};
+    return analysisCore.measurePlane(plane, droplet);
   }
 
-  async function quantifySession(session, expectedJob = state.activeJob) {
-    const channels = allChannels(session).filter(channel => session.measuredChannelIds.includes(channel.id)), rows = {};
+  async function quantifySession(session, expectedJob = state.activeJob, config = analysisConfig(session)) {
+    const expectedConfigKey = configKey(config), channels = allChannels(session).filter(channel => config.measuredChannelIds.includes(channel.id));
+    const rows = {}, pendingMeasurements = [];
     for (let index = 0; index < session.detections.length; index++) {
-      if (expectedJob !== state.activeJob || session !== current()) return false;
+      if (expectedJob !== state.activeJob || session !== current() || configKey(analysisConfig(session)) !== expectedConfigKey) return false;
       const droplet = session.detections[index], measurements = {};
       for (const channel of channels) {
-        const plane = getPlane(session, channel.id);
+        const plane = getPlane(session, channel.id, config.selectedFrame);
         measurements[channel.id] = measurePlane(plane, droplet);
         if (externalChannel(session, channel.id)) measurements[channel.id].flags.push('channel_alignment_unverified');
       }
-      droplet.measurements = measurements;
-      rows[droplet.id] = {dropletId: droplet.id, frame: {...session.selectedFrame}, perChannel: measurements};
+      pendingMeasurements.push([droplet, measurements]);
+      rows[droplet.id] = {dropletId: droplet.id, frame: {...config.selectedFrame}, perChannel: measurements};
       if ((index & 7) === 0) { showPhase(`Measuring raw channel planes… ${index + 1}/${session.detections.length}`, 'busy'); await tick(); }
     }
+    if (expectedJob !== state.activeJob || session !== current() || configKey(analysisConfig(session)) !== expectedConfigKey) return false;
+    pendingMeasurements.forEach(([droplet, measurements]) => { droplet.measurements = measurements; });
     session.measurementRows = rows;
+    session.completedConfigKey = expectedConfigKey;
     return true;
   }
 
   async function remeasureCurrent() {
     const session = current();
     if (!session?.analyzed || state.busy) return;
-    const job = ++state.activeJob; session.analysisRevision++; session.stale = true; state.busy = true; renderQueue(); updateResults(); showPhase('Measuring raw channel planes…', 'busy');
-    try { const measured = await quantifySession(session, job); if (measured && job === state.activeJob && session === current()) { session.lastCompletedRevision = session.analysisRevision; session.stale = false; updateResults(); showPhase(`${session.detections.length} candidates · ${session.measuredChannelIds.length} channels quantified`, 'ready'); } }
+    const job = ++state.activeJob; session.analysisRevision++; session.stale = true; state.busy = true; state.jobPhase = 'remeasure'; renderQueue(); updateResults(); showPhase('Measuring raw channel planes…', 'busy');
+    const config = analysisConfig(session), expectedConfigKey = configKey(config);
+    try { const measured = await quantifySession(session, job, config); if (measured && job === state.activeJob && session === current() && configKey(analysisConfig(session)) === expectedConfigKey) { session.lastCompletedRevision = session.analysisRevision; session.stale = false; updateResults(); showPhase(`${session.detections.length} candidates · ${session.measuredChannelIds.length} channels quantified`, 'ready'); } }
     catch (error) { toast(error?.message || 'Measurement failed', 'error'); showPhase('Measurement failed', 'error'); }
-    finally { state.busy = false; renderQueue(); updateResults(); }
+    finally {
+      state.busy = false; state.jobPhase = null; renderQueue(); updateResults();
+      if (state.pendingDetect) { state.pendingDetect = false; state.pendingRemeasure = false; requestDetect(0); }
+      else if (state.pendingRemeasure || session.analysisRevision !== session.lastCompletedRevision) { state.pendingRemeasure = false; remeasureCurrent(); }
+    }
   }
 
   function includedDetections(session) { return (session?.detections || []).filter(droplet => !droplet.excluded); }
 
-  function analysisReady(session) { return Boolean(session?.analyzed && !session.stale && session.mappingResolved && session.dataset.mappingValid !== false && (!session.dataset.alignment || session.dataset.alignment.valid)); }
+  function analysisReady(session) { return Boolean(session?.analyzed && !session.stale && session.completedConfigKey === configKey(analysisConfig(session)) && session.mappingResolved && session.dataset.mappingValid !== false && (!session.dataset.alignment || session.dataset.alignment.valid)); }
 
   function calibrationDiameter(session, pixels) { const calibration = session?.calibration; return calibration?.xUmPerPx ? pixels * Math.sqrt(calibration.xUmPerPx * (calibration.yUmPerPx || calibration.xUmPerPx)) : null; }
 
@@ -814,7 +891,7 @@
     const channels = allChannels(session).filter(channel => session.measuredChannelIds.includes(channel.id));
     if (!channels.some(channel => channel.id === session.intensityChannelId)) session.intensityChannelId = channels[0]?.id || session.detectionChannelId;
     select.innerHTML = channels.map(channel => `<option value="${htmlEscape(channel.id)}">${htmlEscape(channel.displayName)}</option>`).join(''); select.value = session.intensityChannelId || channels[0]?.id || '';
-    $('#histLabel').textContent = channels.length ? `${channelById(session, select.value)?.displayName || 'Intensity'} distribution` : 'Intensity distribution';
+    $('#histLabel').textContent = channels.length ? `Included droplet means · ${channelById(session, select.value)?.displayName || 'channel'}` : 'Included droplet channel means';
   }
 
   function drawHistogram(values) {
@@ -833,7 +910,8 @@
     const card = $('#dropletDetail'), grid = $('#detailGrid'); if (!card || !grid) return;
     if (!droplet) { card.hidden = true; grid.replaceChildren(); return; }
     card.hidden = false; const channelParts = allChannels(session).filter(channel => droplet.measurements?.[channel.id]).map(channel => { const measurement = droplet.measurements[channel.id], unit = rawUnitLabel(session, channel); return `<div><span>${htmlEscape(channel.displayName)}</span><strong>${measurement.rawMean === null ? '—' : `${measurement.rawMean.toLocaleString(undefined, {maximumFractionDigits: 3})} ${unit}`}</strong><small>median ${measurement.rawMedian === null ? '—' : measurement.rawMedian.toLocaleString(undefined, {maximumFractionDigits: 3})} · n=${measurement.nPixels}</small></div>`; }).join('');
-    grid.innerHTML = `<div><span>Droplet</span><strong>#${droplet.id}</strong><small>${droplet.excluded ? 'Excluded from summaries' : 'Included'}</small></div><div><span>Diameter</span><strong>${fmt(droplet.diameterPx, 2)} px</strong><small>circularity ${fmt(droplet.circularity, 3)}</small></div>${channelParts || '<div><span>Measurements</span><strong>Not available</strong></div>'}`;
+    const qcFlags = [...new Set([...(droplet.flags || []), ...Object.values(droplet.measurements || {}).flatMap(measurement => measurement.flags || [])])];
+    grid.innerHTML = `<div><span>Droplet</span><strong>#${droplet.id}</strong><small>${droplet.excluded ? 'Excluded from summaries' : 'Included'}</small></div><div><span>Equivalent diameter</span><strong>${fmt(droplet.diameterPx, 2)} px</strong><small>shape circularity estimate ${fmt(droplet.circularity, 3)}</small></div>${qcFlags.length ? `<div class="detail-qc"><span>Review flags</span><strong>${qcFlags.length}</strong><small>${htmlEscape(qcFlags.join(' · '))}</small></div>` : ''}${channelParts || '<div><span>Measurements</span><strong>Not available</strong></div>'}`;
   }
 
   function selectDroplet(id) {
@@ -850,19 +928,23 @@
     renderStats(session); updateSummaryChannel(session);
     const channels = allChannels(session).filter(channel => session.measuredChannelIds.includes(channel.id)), body = $('#resultBody'), colSpan = 3 + channels.length;
     $('#resultPill').textContent = session.stale ? 'Results stale' : `${session.detections.length} candidate${session.detections.length === 1 ? '' : 's'}`;
-    $('#resultStatus').textContent = session.stale ? 'Settings changed · run detection to update measurements' : session.analyzed ? `${session.detections.length} droplets · ${channels.length} raw channel${channels.length === 1 ? '' : 's'} · values in original source units` : 'Ready to detect'; $('#resultStatus').className = `result-status ${session.stale ? 'warn' : session.analyzed ? 'ready' : ''}`;
+    const flagged = session.detections.filter(droplet => droplet.flags?.length || Object.values(droplet.measurements || {}).some(measurement => measurement.flags?.length)).length;
+    $('#resultStatus').textContent = session.stale ? 'Settings changed · run detection to update measurements' : session.noDetectionReason || (session.analyzed ? `${session.detections.length} candidates · ${channels.length} raw channel${channels.length === 1 ? '' : 's'} · ${flagged} flagged · values in original source units` : 'Ready to detect'); $('#resultStatus').className = `result-status ${session.stale || session.noDetectionReason || flagged ? 'warn' : session.analyzed ? 'ready' : ''}`;
     const header = $('#resultBody')?.closest('table')?.querySelector('thead tr');
-    if (header) header.innerHTML = `<th>#</th><th>Diameter</th><th>Circ.</th>${channels.map(channel => `<th title="Original source samples">${htmlEscape(channel.displayName)} mean (${rawUnitLabel(session, channel)})</th>`).join('')}`;
+    if (header) header.innerHTML = `<th>#</th><th>Equivalent diameter</th><th title="Estimated from segmented pixel area and perimeter">Shape circularity (estimate)</th>${channels.map(channel => `<th title="Original source samples">${htmlEscape(channel.displayName)} mean (${rawUnitLabel(session, channel)})</th>`).join('')}`;
     if (!session.detections.length) body.innerHTML = `<tr><td colspan="${colSpan}" class="muted" style="text-align:center;padding:22px">No droplets detected</td></tr>`;
-    else body.innerHTML = session.detections.map(droplet => `<tr data-id="${droplet.id}" class="${droplet.excluded ? 'excluded' : ''}${droplet.id === session.selectedDropletId ? ' result-row-selected' : ''}"><td><input type="checkbox" ${droplet.excluded ? '' : 'checked'} aria-label="Include droplet ${droplet.id}"> ${droplet.id}</td><td>${fmt(calibrationDiameter(session, droplet.diameterPx) ?? droplet.diameterPx, 2)} ${session.calibration?.xUmPerPx ? 'µm' : 'px'}</td><td>${fmt(droplet.circularity, 2)}</td>${channels.map(channel => `<td>${measurementValue(droplet, channel.id) === null ? '—' : Number(measurementValue(droplet, channel.id)).toLocaleString(undefined, {maximumFractionDigits: 3})}</td>`).join('')}</tr>`).join('');
+    else body.innerHTML = session.detections.map(droplet => { const flags = [...new Set([...(droplet.flags || []), ...Object.values(droplet.measurements || {}).flatMap(measurement => measurement.flags || [])])]; return `<tr data-id="${droplet.id}" title="${htmlEscape(flags.join(' · '))}" class="${droplet.excluded ? 'excluded' : ''}${flags.length ? ' flagged' : ''}${droplet.id === session.selectedDropletId ? ' result-row-selected' : ''}"><td><input type="checkbox" ${droplet.excluded ? '' : 'checked'} aria-label="Include droplet ${droplet.id}"> ${droplet.id}</td><td>${fmt(calibrationDiameter(session, droplet.diameterPx) ?? droplet.diameterPx, 2)} ${session.calibration?.xUmPerPx ? 'µm' : 'px'}</td><td>${fmt(droplet.circularity, 2)}</td>${channels.map(channel => `<td>${measurementValue(droplet, channel.id) === null ? '—' : Number(measurementValue(droplet, channel.id)).toLocaleString(undefined, {maximumFractionDigits: 3})}</td>`).join('')}</tr>`; }).join('');
     $$('#resultBody tr[data-id]').forEach(row => { const id = Number(row.dataset.id), droplet = session.detections.find(item => item.id === id); row.onclick = event => { if (event.target.matches('input')) return; selectDroplet(id); }; row.querySelector('input')?.addEventListener('change', event => { droplet.excluded = !event.target.checked; renderOverlay(); updateResults(); selectDroplet(id); }); });
     const selectedChannel = $('#summaryChannel')?.value || session.intensityChannelId, values = includedDetections(session).map(droplet => measurementValue(droplet, selectedChannel)).filter(Number.isFinite); drawHistogram(values); renderDetail(session, session.detections.find(droplet => droplet.id === session.selectedDropletId));
-    const enabled = session.detections.length > 0 && session.analyzed && !session.stale; ['csvBtn', 'jsonBtn', 'pngBtn', 'copyBtn', 'includeAllBtn'].forEach(id => $('#' + id).disabled = !enabled);
+    const ready = analysisReady(session), hasCandidates = session.detections.length > 0;
+    $('#csvBtn').disabled = !ready;
+    ['pngBtn', 'copyBtn', 'includeAllBtn'].forEach(id => $('#' + id).disabled = !ready || !hasCandidates);
+    $('#jsonBtn').disabled = !ready;
   }
 
   function resetDetection() {
     const session = current(); if (!session || state.busy) return;
-    session.detections = []; session.measurementRows = {}; session.reviewArchive = []; session.analyzed = false; session.stale = false; session.analysisRevision++; session.selectedDropletId = null; updateResults(); renderOverlay(); showPhase('Ready to detect', '');
+    session.detections = []; session.measurementRows = {}; session.reviewArchive = []; session.segmentationMask = null; session.segmentationMaskCanvas = null; session.detectedMethod = null; session.analyzed = false; session.stale = false; session.analysisRevision++; session.selectedDropletId = null; updateResults(); renderOverlay(); showPhase('Ready to detect', '');
   }
 
   function restoreExclusions() {
@@ -874,11 +956,10 @@
     if (!analysisReady(session)) return [];
     const channels = allChannels(session).filter(channel => session.measuredChannelIds.includes(channel.id)), rows = [];
     for (const droplet of session.detections) {
-      const row = {image: session.name, dataset_id: session.dataset.id, z: session.selectedFrame.z, t: session.selectedFrame.t, droplet_id: droplet.id, included: !droplet.excluded, center_x_px: Number(droplet.x.toFixed(4)), center_y_px: Number(droplet.y.toFixed(4)), diameter_px: Number(droplet.diameterPx.toFixed(4)), diameter_um: calibrationDiameter(session, droplet.diameterPx), circularity: Number(droplet.circularity.toFixed(5)), roi_method: 'inner-circle', roi_radius_fraction: ROI_RADIUS_FRACTION, flags: [...(droplet.flags || [])].join('|')};
+      const row = {source_file: session.name, dataset_id: session.dataset.id, series: session.dataset.provenance?.seriesIndex ?? null, z: session.selectedFrame.z, t: session.selectedFrame.t, droplet_id: droplet.id, included: !droplet.excluded, center_x_px: Number(droplet.x.toFixed(4)), center_y_px: Number(droplet.y.toFixed(4)), equivalent_diameter_px: Number(droplet.diameterPx.toFixed(4)), equivalent_diameter_um: calibrationDiameter(session, droplet.diameterPx), shape_circularity_estimate: Number(droplet.circularity.toFixed(5)), roi_method: 'inner-circle', roi_radius_fraction: ROI_RADIUS_FRACTION, roi_area_px2: Number((Math.PI * (droplet.radiusPx * ROI_RADIUS_FRACTION) ** 2).toFixed(4)), method_version: '2.0.0', software_build_id: window.DROPLET_MEASURE_BUILD_ID || 'local', channel_metadata_json: JSON.stringify(channels.map(channel => ({id: channel.id, displayName: channel.displayName, role: channel.role, units: rawUnitLabel(session, channel)}))), qc_flags: [...(droplet.flags || [])].join('|')};
       for (const channel of channels) {
-        const measurement = droplet.measurements?.[channel.id], prefix = `${safeName(channel.id)}_${safeName(channel.displayName)}`;
+        const measurement = droplet.measurements?.[channel.id], prefix = `channel_${safeName(channel.id)}`;
         row[`${prefix}_raw_sum`] = measurement?.rawSum ?? null; row[`${prefix}_raw_mean`] = measurement?.rawMean ?? null; row[`${prefix}_raw_median`] = measurement?.rawMedian ?? null; row[`${prefix}_raw_min`] = measurement?.rawMin ?? null; row[`${prefix}_raw_max`] = measurement?.rawMax ?? null; row[`${prefix}_raw_std_dev`] = measurement?.rawStdDev ?? null; row[`${prefix}_n_pixels`] = measurement?.nPixels ?? null; row[`${prefix}_roi_pixel_count`] = measurement?.roiPixelCount ?? null; row[`${prefix}_invalid_pixels`] = measurement?.invalidPixels ?? null; row[`${prefix}_saturated_pixels`] = measurement?.saturatedPixels ?? null; row[`${prefix}_saturated_fraction`] = measurement?.saturatedFraction ?? null; row[`${prefix}_saturation_level`] = measurement?.saturationLevel ?? null; row[`${prefix}_flags`] = measurement?.flags?.join('|') || '';
-        if (rawUnitLabel(session, channel) === 'DN') Object.assign(row, {[`${prefix}_raw_sum_dn`]: measurement?.rawSum ?? null, [`${prefix}_raw_mean_dn`]: measurement?.rawMean ?? null, [`${prefix}_raw_median_dn`]: measurement?.rawMedian ?? null, [`${prefix}_raw_min_dn`]: measurement?.rawMin ?? null, [`${prefix}_raw_max_dn`]: measurement?.rawMax ?? null, [`${prefix}_raw_std_dev_dn`]: measurement?.rawStdDev ?? null});
       }
       rows.push(row);
     }
@@ -887,15 +968,28 @@
 
   function exportCsv() {
     const session = current(); if (!analysisReady(session)) return toast('Run detection and measurement before exporting.', 'error');
-    const rows = exportRows(session); if (!rows.length) return;
-    const headers = [...new Set(rows.flatMap(row => Object.keys(row)))], text = [headers.map(csvValue).join(','), ...rows.map(row => headers.map(header => csvValue(row[header])).join(','))].join('\n');
+    const rows = exportRows(session), headers = rows.length ? [...new Set(rows.flatMap(row => Object.keys(row)))] : exportHeaders(session);
+    const text = [headers.map(csvValue).join(','), ...rows.map(row => headers.map(header => csvValue(row[header])).join(','))].join('\n');
     download(`${session.name.replace(/\.[^.]+$/, '')}_analysis.csv`, new Blob([text], {type: 'text/csv;charset=utf-8'}));
   }
 
+  function exportHeaders(session) {
+    const headers = ['source_file', 'dataset_id', 'series', 'z', 't', 'droplet_id', 'included', 'center_x_px', 'center_y_px', 'equivalent_diameter_px', 'equivalent_diameter_um', 'shape_circularity_estimate', 'roi_method', 'roi_radius_fraction', 'roi_area_px2', 'method_version', 'software_build_id', 'channel_metadata_json', 'qc_flags'];
+    const fields = ['raw_sum', 'raw_mean', 'raw_median', 'raw_min', 'raw_max', 'raw_std_dev', 'n_pixels', 'roi_pixel_count', 'invalid_pixels', 'saturated_pixels', 'saturated_fraction', 'saturation_level', 'flags'];
+    for (const channel of allChannels(session).filter(item => session.measuredChannelIds.includes(item.id))) {
+      const prefix = `channel_${safeName(channel.id)}`;
+      headers.push(...fields.map(field => `${prefix}_${field}`));
+    }
+    return headers;
+  }
+
   function exportJson() {
-    const session = current(); if (!analysisReady(session) || !session.detections.length) return toast('Run detection and measurement before exporting.', 'error');
+    const session = current(); if (!analysisReady(session)) return toast('Run detection and measurement before exporting.', 'error');
     const channels = allChannels(session).map(channel => ({id: channel.id, index: channel.index, sourceName: channel.sourceName, displayName: channel.displayName, role: channel.role, fluorophore: channel.fluorophore || '', emissionNm: channel.emissionNm ?? null, colorLut: channel.colorLut, quantify: session.measuredChannelIds.includes(channel.id), saturationLevel: finiteCeiling(channel.saturationLevel), metadata: channel.metadata}));
-    const data = {schema: 'droplet-measure.analysis/v2', schema_version: '2.0.0', application: 'Droplet Measure', generatedAt: new Date().toISOString(), source: session.dataset.source, dataset: {id: session.dataset.id, width: session.width, height: session.height, pixelType: session.dataset.pixelType, significantBits: session.dataset.significantBits, axes: session.dataset.axes, pixelSizeUm: session.dataset.pixelSizeUm, colorImage: Boolean(session.dataset.colorImage), alignment: session.dataset.alignment, provenance: session.dataset.provenance}, channels, selected_frame: {...session.selectedFrame}, detection: {channel_id: session.detectionChannelId, settings: session.settings, detection_source: session.detectionSource, detected_polarity: session.detectedPolarity, detected_threshold: session.detectedThreshold, roi_method: 'inner_circle', roi_radius_fraction: ROI_RADIUS_FRACTION, coordinate_space: 'original-pixels'}, measurement: {raw_pixel_precision_preserved: true, raw_units: rawUnitLabel(session), channel_units: Object.fromEntries(channels.map(channel => [channel.id, rawUnitLabel(session, channel)])), background_method: 'none', invalid_pixel_policy: 'omit_and_count', saturation_policy: 'not_assessed_without_channel_ceiling'}, calibration: session.calibration ? {x_um_per_px: session.calibration.xUmPerPx, y_um_per_px: session.calibration.yUmPerPx, source: session.calibration.source} : null, provenance: {axis_mapping_source: session.dataset.provenance?.axisMappingSource, metadata_source: session.dataset.provenance?.metadataSource, warnings: session.warnings, selected_frame: session.selectedFrame}, analysis: {measured_channel_ids: session.measuredChannelIds, revision: session.lastCompletedRevision, warnings: session.warnings}, droplets: exportRows(session)};
+    const data = {schema: 'droplet-measure.analysis/v2', schema_version: '2.0.0', application: 'Droplet Measure', software: {version: '2.0.0', build_id: window.DROPLET_MEASURE_BUILD_ID || 'local'}, generatedAt: new Date().toISOString(), source: session.dataset.source, dataset: {id: session.dataset.id, width: session.width, height: session.height, pixelType: session.dataset.pixelType, significantBits: session.dataset.significantBits, axes: session.dataset.axes, pixelSizeUm: session.dataset.pixelSizeUm, colorImage: Boolean(session.dataset.colorImage), alignment: session.dataset.alignment, provenance: session.dataset.provenance}, channels, selected_frame: {...session.selectedFrame}, detection: {channel_id: session.detectionChannelId, settings: session.settings, detection_source: session.detectionSource, detected_polarity: session.detectedPolarity, detected_threshold: session.detectedThreshold, roi_method: 'inner_circle', roi_radius_fraction: ROI_RADIUS_FRACTION, coordinate_space: 'original-pixels'}, measurement: {raw_pixel_precision_preserved: true, raw_units: rawUnitLabel(session), channel_units: Object.fromEntries(channels.map(channel => [channel.id, rawUnitLabel(session, channel)])), background_method: 'none', invalid_pixel_policy: 'omit_and_count', saturation_policy: 'not_assessed_without_channel_ceiling'}, calibration: session.calibration ? {x_um_per_px: session.calibration.xUmPerPx, y_um_per_px: session.calibration.yUmPerPx, source: session.calibration.source} : null, provenance: {axis_mapping_source: session.dataset.provenance?.axisMappingSource, metadata_source: session.dataset.provenance?.metadataSource, warnings: session.warnings, selected_frame: session.selectedFrame}, analysis: {measured_channel_ids: session.measuredChannelIds, revision: session.lastCompletedRevision, warnings: session.warnings}, droplets: exportRows(session)};
+    data.detection = {...data.detection, segmentation_method: session.detectedMethod || null, mask_dimensions: session.segmentationMask ? [session.segmentationMaskWidth, session.segmentationMaskHeight] : null, no_candidates_reason: session.noDetectionReason || null};
+    data.analysis = {...data.analysis, status: 'complete', candidate_count: session.detections.length, included_count: includedDetections(session).length, excluded_count: session.detections.filter(droplet => droplet.excluded).length, warnings: qualityWarnings(session)};
+    data.provenance.warnings = qualityWarnings(session);
     download(`${session.name.replace(/\.[^.]+$/, '')}_analysis.json`, new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
   }
 
@@ -952,18 +1046,127 @@
       dataset = await window.openMicroscopyDataset(file);
       if (dataset.ambiguous || dataset.axes.sizeC !== 1 || dataset.axes.sizeZ !== 1 || dataset.axes.sizeT !== 1) throw new Error('Choose a single-plane, single-channel file for the advanced attachment.');
       if (dataset.width !== session.width || dataset.height !== session.height) throw new Error('The attached channel dimensions must match the dataset exactly.');
-      if (!confirm('Dimensions match, but dimensions alone do not prove spatial registration. Attach this file as an unverified aligned channel?')) return;
+      if (!await confirmExternalAlignment(file.name)) return;
       const source = dataset.channels[0], channel = {...channelCopy(source), id: `EXT${session.externalChannels.length}`, index: session.channels.length + session.externalChannels.length, sourceName: file.name, displayName: source.displayName || file.name, metadata: {...source.metadata, registration: 'user-confirmed-unverified'}};
       session.externalChannels.push({id: channel.id, ...channel, dataset}); attached = true; session.measuredChannelIds.push(channel.id); session.warnings.push(`External channel ${file.name} was attached with user-confirmed but unverified registration.`); renderSummary(session); renderChannelMap(session); renderCurrentImage(); markStale(session, 'External channel added · re-run detection to quantify it'); toast('Separate channel attached');
     } catch (error) { toast(error?.message || 'Could not attach the separate channel.', 'error'); }
     finally { if (dataset && !attached) dataset.dispose?.(); }
   }
 
+  function batchRecipe(session) {
+    return {
+      detectionChannelId: session.detectionChannelId,
+      measuredChannelIds: [...session.measuredChannelIds],
+      selectedFrame: {...session.selectedFrame},
+      settings: {...session.settings},
+      calibration: session.calibration?.source === 'user' ? {...session.calibration} : null,
+      channelRoles: Object.fromEntries(allChannels(session).map(channel => [channel.id, channel.role])),
+      saturationLevels: Object.fromEntries(allChannels(session).map(channel => [channel.id, finiteCeiling(channel.saturationLevel)]))
+    };
+  }
+
+  function batchPreflight(session, recipe) {
+    if (!session.mappingResolved || session.dataset.ambiguous) return 'C/Z/T mapping is unresolved';
+    if (session.dataset.mappingValid === false) return 'Metadata mapping is incomplete';
+    if (session.dataset.alignment && !session.dataset.alignment.valid) return session.dataset.alignment.reason || 'Source planes are not aligned';
+    if (recipe.selectedFrame.z >= session.dataset.axes.sizeZ || recipe.selectedFrame.t >= session.dataset.axes.sizeT) return 'Selected Z/T frame is unavailable';
+    const channels = allChannels(session);
+    for (const id of [recipe.detectionChannelId, ...recipe.measuredChannelIds]) {
+      const channel = channels.find(candidate => candidate.id === id);
+      if (!channel) return `Required channel ${id} is missing`;
+      if (channel.role !== recipe.channelRoles[id]) return `Channel ${id} role does not match the batch recipe`;
+    }
+    return null;
+  }
+
+  function applyBatchRecipe(session, recipe) {
+    session.detectionChannelId = recipe.detectionChannelId;
+    session.measuredChannelIds = [...recipe.measuredChannelIds];
+    session.selectedFrame = {...recipe.selectedFrame};
+    session.settings = {...recipe.settings};
+    if (recipe.calibration) session.calibration = {...recipe.calibration};
+    for (const channel of allChannels(session)) if (Object.hasOwn(recipe.saturationLevels, channel.id)) channel.saturationLevel = recipe.saturationLevels[channel.id];
+    syncUiFromSettings(session); renderChannelMap(session); renderSummary(session); updateScaleUi(); renderCurrentImage(); renderOverlay();
+    markStale(session, 'Batch recipe applied · analysis required');
+  }
+
+  function renderBatchReport(results) {
+    const list = $('#batchReport'); list.replaceChildren();
+    for (const result of results) {
+      const item = document.createElement('li'); item.className = result.status;
+      item.textContent = `${result.file}: ${result.status}${result.candidates === undefined ? '' : ` · ${result.candidates} candidates`}${result.reason ? ` · ${result.reason}` : ''}`;
+      list.append(item);
+    }
+    list.hidden = results.length === 0;
+  }
+
+  function exportBatchCsv() {
+    const results = state.lastBatchReport.filter(result => result.status === 'success' && result.session);
+    const headers = ['source_file', 'dataset_id', 'series', 'z', 't', 'droplet_id', 'included', 'center_x_px', 'center_y_px', 'equivalent_diameter_px', 'equivalent_diameter_um', 'shape_circularity_estimate', 'roi_method', 'roi_radius_fraction', 'roi_area_px2', 'method_version', 'software_build_id', 'channel_id', 'channel_name', 'channel_role', 'raw_units', 'raw_sum', 'raw_mean', 'raw_median', 'raw_min', 'raw_max', 'raw_std_dev', 'n_pixels', 'roi_pixel_count', 'invalid_pixels', 'saturated_pixels', 'saturated_fraction', 'saturation_level', 'qc_flags'];
+    const rows = [];
+    for (const result of results) {
+      const session = result.session;
+      for (const droplet of session.detections) for (const channelId of session.measuredChannelIds) {
+        const channel = channelById(session, channelId), measurement = droplet.measurements?.[channelId];
+        if (!channel || !measurement) continue;
+        rows.push({source_file: session.name, dataset_id: session.dataset.id, series: session.dataset.provenance?.seriesIndex ?? null, z: session.selectedFrame.z, t: session.selectedFrame.t, droplet_id: droplet.id, included: !droplet.excluded, center_x_px: droplet.x, center_y_px: droplet.y, equivalent_diameter_px: droplet.diameterPx, equivalent_diameter_um: calibrationDiameter(session, droplet.diameterPx), shape_circularity_estimate: droplet.circularity, roi_method: measurement.roi.kind, roi_radius_fraction: measurement.roi.radiusFraction, roi_area_px2: Math.PI * measurement.roi.radiusPx ** 2, method_version: '2.0.0', software_build_id: window.DROPLET_MEASURE_BUILD_ID || 'local', channel_id: channel.id, channel_name: channel.displayName, channel_role: channel.role, raw_units: rawUnitLabel(session, channel), raw_sum: measurement.rawSum, raw_mean: measurement.rawMean, raw_median: measurement.rawMedian, raw_min: measurement.rawMin, raw_max: measurement.rawMax, raw_std_dev: measurement.rawStdDev, n_pixels: measurement.nPixels, roi_pixel_count: measurement.roiPixelCount, invalid_pixels: measurement.invalidPixels, saturated_pixels: measurement.saturatedPixels, saturated_fraction: measurement.saturatedFraction, saturation_level: measurement.saturationLevel, qc_flags: [...(droplet.flags || []), ...measurement.flags].join('|')});
+      }
+    }
+    const text = [headers.map(csvValue).join(','), ...rows.map(row => headers.map(header => csvValue(row[header])).join(','))].join('\n');
+    download('droplet-measure_batch.csv', new Blob([text], {type: 'text/csv;charset=utf-8'}));
+  }
+
+  function exportBatchManifest() {
+    const manifest = {
+      schema: 'droplet-measure.batch/v1', generatedAt: new Date().toISOString(), application: 'Droplet Measure',
+      buildId: window.DROPLET_MEASURE_BUILD_ID || 'local', recipe: state.lastBatchRecipe,
+      results: state.lastBatchReport.map(({session, ...result}) => ({...result, calibration: session?.calibration || null, channels: session ? session.measuredChannelIds.map(id => { const channel = channelById(session, id); return {id, displayName: channel?.displayName || id, role: channel?.role || 'unknown'}; }) : []})),
+      totals: {succeeded: state.lastBatchReport.filter(result => result.status === 'success').length, failed: state.lastBatchReport.filter(result => result.status === 'failed').length, skipped: state.lastBatchReport.filter(result => result.status === 'skipped').length}
+    };
+    download('droplet-measure_batch_manifest.json', new Blob([JSON.stringify(manifest, null, 2)], {type: 'application/json'}));
+  }
+
   async function batchAnalyze() {
-    if (state.busy || state.images.length < 2) return;
-    const original = state.index;
-    for (let index = 0; index < state.images.length; index++) { await loadCurrent(index); await detect(); await tick(); }
-    await loadCurrent(original); toast('Batch analysis complete');
+    if (state.busy || state.batch || state.images.length < 2 || !current()) return;
+    const original = state.index, template = current();
+    syncSettingsFromUi(template);
+    const recipe = batchRecipe(template), run = {cancelRequested: false}, results = [];
+    state.batch = run; state.lastBatchRecipe = recipe;
+    $('#batchProgress').max = state.images.length; $('#batchProgress').value = 0; $('#batchProgress').hidden = false;
+    $('#batchCancelBtn').hidden = false; $('#batchStatus').hidden = false; $('#batchStatus').textContent = `Preflight · frozen recipe from ${template.name}`;
+    $('#batchCsvBtn').disabled = true; $('#batchManifestBtn').disabled = true; renderQueue();
+    let nextIndex = 0;
+    try {
+      for (let index = 0; index < state.images.length; index++) {
+        if (run.cancelRequested) break;
+        nextIndex = index + 1;
+        await loadCurrent(index);
+        const session = current(), incompatibility = batchPreflight(session, recipe);
+        if (incompatibility) results.push({file: session.name, status: 'skipped', reason: incompatibility, session});
+        else {
+          try {
+            applyBatchRecipe(session, recipe);
+            await detect();
+            results.push(analysisReady(session)
+              ? {file: session.name, status: 'success', candidates: session.detections.length, session}
+              : {file: session.name, status: 'failed', reason: 'Analysis did not complete with the frozen recipe', session});
+          } catch (error) { results.push({file: session.name, status: 'failed', reason: error?.message || 'Analysis failed', session}); }
+        }
+        $('#batchProgress').value = index + 1;
+        $('#batchStatus').textContent = `Batch ${index + 1}/${state.images.length} · ${session.name} · ${results.at(-1).status}`;
+        renderBatchReport(results);
+        await tick();
+      }
+      if (run.cancelRequested) for (let index = nextIndex; index < state.images.length; index++) results.push({file: state.images[index].name, status: 'skipped', reason: 'Cancelled before analysis'});
+    } finally {
+      state.lastBatchReport = results;
+      await loadCurrent(original);
+      state.batch = null; $('#batchCancelBtn').hidden = true; $('#batchProgress').hidden = true;
+      const succeeded = results.filter(result => result.status === 'success').length, failed = results.filter(result => result.status === 'failed').length, skipped = results.filter(result => result.status === 'skipped').length;
+      $('#batchStatus').textContent = `${run.cancelRequested ? 'Batch cancelled' : 'Batch complete'}: ${succeeded} succeeded, ${failed} failed, ${skipped} skipped.`;
+      $('#batchCsvBtn').disabled = !succeeded; $('#batchManifestBtn').disabled = results.length === 0;
+      renderBatchReport(results); renderQueue();
+    }
   }
 
   function setTheme(theme) {
@@ -988,15 +1191,23 @@
     els.workspace.addEventListener('drop', event => addFiles(event.dataTransfer.files));
     document.addEventListener('paste', event => { const files = [...(event.clipboardData?.files || [])]; if (files.length) addFiles(files); });
     $('#themeBtn').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
-    $('#fitBtn').onclick = fitImage; $('#calibrateBtn').onclick = startCalibration; $('#pixelSizeBtn').onclick = promptPixelSize; $('#detectBtn').onclick = detect; $('#batchBtn').onclick = batchAnalyze; $('#resetDetectionBtn').onclick = resetDetection; $('#restoreExclusionsBtn').onclick = restoreExclusions;
+    $('#saveCalibrationBtn').onclick = saveCalibration;
+    $('#cancelCalibrationBtn').onclick = () => $('#calibrationDialog').close();
+    $('#calibrationDialog form').addEventListener('submit', event => { event.preventDefault(); saveCalibration(); });
+    $('#fitBtn').onclick = fitImage; $('#calibrateBtn').onclick = startCalibration; $('#pixelSizeBtn').onclick = promptPixelSize; $('#detectBtn').onclick = detect; $('#batchBtn').onclick = batchAnalyze; $('#batchCancelBtn').onclick = () => { if (state.batch) { state.batch.cancelRequested = true; $('#batchStatus').textContent = 'Will stop after the current image finishes.'; } }; $('#batchCsvBtn').onclick = exportBatchCsv; $('#batchManifestBtn').onclick = exportBatchManifest; $('#resetDetectionBtn').onclick = resetDetection; $('#restoreExclusionsBtn').onclick = restoreExclusions;
     $$('.toolbtn[data-tool]').forEach(button => button.onclick = () => setTool(button.dataset.tool));
     $('#polaritySwitch').querySelectorAll('button').forEach(button => button.onclick = () => { const session = current(); if (!session) return; session.settings.polarity = button.dataset.v; $('#polaritySwitch').querySelectorAll('button').forEach(item => item.classList.toggle('active', item === button)); markStale(session, 'Polarity changed · results need recomputation'); requestDetect(); });
-    const settingsChanged = () => { const session = current(); if (!session) return; syncSettingsFromUi(session); $('#thresholdVal').textContent = session.settings.autoThreshold ? 'auto' : session.settings.threshold; $('#threshold').disabled = session.settings.autoThreshold; $('#circVal').textContent = Number(session.settings.minCircularity).toFixed(2); $('#smoothVal').textContent = `${session.settings.smoothing} px`; if (session.analyzed) requestDetect(); };
+    const settingsChanged = () => { const session = current(); if (!session) return; syncSettingsFromUi(session); $('#thresholdVal').textContent = session.settings.autoThreshold ? 'auto' : session.settings.threshold; $('#threshold').disabled = session.settings.autoThreshold; $('#circVal').textContent = Number(session.settings.minCircularity).toFixed(2); $('#smoothVal').textContent = `${session.settings.smoothing} px`; if (session.analyzed) requestDetect(); else if (state.busy) { markStale(session, 'Settings changed · restarting analysis'); state.pendingDetect = true; } };
     ['minDiameter', 'maxDiameter', 'circularity', 'smoothing', 'threshold'].forEach(id => $('#' + id).addEventListener('input', settingsChanged)); $('#autoThreshold').addEventListener('change', settingsChanged);
-    [$('#displayChannelSelect'), $('#viewerChannelSelect')].forEach(select => select?.addEventListener('change', event => { const session = current(); if (!session) return; session.displayChannelId = event.target.value; renderDisplayOptions(session); renderCurrentImage(); renderOverlay(); }));
+    $('#viewerChannelSelect')?.addEventListener('change', event => { const session = current(); if (!session) return; session.displayChannelId = event.target.value; renderDisplayOptions(session); renderCurrentImage(); renderOverlay(); });
     $('#summaryChannel')?.addEventListener('change', event => { const session = current(); if (!session) return; session.intensityChannelId = event.target.value; updateResults(); });
     $('#overlayToggle').onclick = event => { state.view.overlay = !state.view.overlay; event.currentTarget.classList.toggle('active', state.view.overlay); event.currentTarget.setAttribute('aria-pressed', String(state.view.overlay)); renderOverlay(); };
-    $('#resultsToggle').onclick = event => { const open = els.right.classList.toggle('open'); event.currentTarget.setAttribute('aria-expanded', String(open)); };
+    $('#overlayMode').addEventListener('change', event => { state.view.overlayMode = event.target.value; renderOverlay(); });
+    $('#resultsToggle').onclick = event => { const open = els.right.classList.toggle('open'); event.currentTarget.setAttribute('aria-expanded', String(open)); if (open) $('#resultStatus').focus({preventScroll: true}); else event.currentTarget.focus(); };
+    els.workspace.addEventListener('click', event => {
+      if (!els.right.classList.contains('open') || event.target.closest('.canvas-toolbar')) return;
+      if (window.matchMedia('(max-width: 1050px)').matches) { els.right.classList.remove('open'); $('#resultsToggle').setAttribute('aria-expanded', 'false'); }
+    });
     $('#includeAllBtn').onclick = () => { const session = current(); if (!session) return; session.detections.forEach(droplet => droplet.excluded = false); updateResults(); renderOverlay(); };
     $('#csvBtn').onclick = exportCsv; $('#jsonBtn').onclick = exportJson; $('#pngBtn').onclick = exportPng; $('#copyBtn').onclick = copySummary; $('#downloadRecipeBtn').onclick = downloadRecipe; $('#applyRecipeBtn').onclick = () => $('#recipeInput').click(); $('#recipeInput').onchange = event => { reapplyRecipe(event.target.files[0]); event.target.value = ''; };
     els.workspace.addEventListener('wheel', event => { if (!current()) return; event.preventDefault(); const rect = els.workspace.getBoundingClientRect(), mouseX = event.clientX - rect.left, mouseY = event.clientY - rect.top, oldZoom = state.view.zoom, newZoom = Math.max(.08, Math.min(8, oldZoom * Math.exp(-event.deltaY * .001))); state.view.x = mouseX - (mouseX - state.view.x) * (newZoom / oldZoom); state.view.y = mouseY - (mouseY - state.view.y) * (newZoom / oldZoom); state.view.zoom = newZoom; applyTransform(); renderOverlay(); }, {passive: false});
@@ -1004,7 +1215,13 @@
     els.overlay.addEventListener('pointermove', event => { if (!state.drag) return; const point = canvasPoint(event); if (state.drag.kind === 'pan') { state.view.x = state.drag.x + event.clientX - state.drag.sx; state.view.y = state.drag.y + event.clientY - state.drag.sy; applyTransform(); } else if (state.drag.kind === 'calibrate') { state.calibration.end = point; renderOverlay(); } else if (state.drag.kind === 'measure') { state.measure.end = point; renderOverlay(); } });
     const endPointer = () => { if (state.drag?.kind === 'calibrate') finishCalibration(); state.drag = null; if (state.tool === 'pan') els.overlay.style.cursor = 'grab'; }; els.overlay.addEventListener('pointerup', endPointer); els.overlay.addEventListener('pointercancel', endPointer);
     window.addEventListener('resize', () => { if (current()) fitImage(); if (current()) updateResults(); });
-    document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); els.fileInput.click(); } if (event.key === 'Escape' && state.tool !== 'pan') { state.calibration = null; state.measure = null; setTool('pan'); } });
+    document.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); els.fileInput.click(); }
+      if (event.key === 'Escape') {
+        if (els.right.classList.contains('open')) { els.right.classList.remove('open'); $('#resultsToggle').setAttribute('aria-expanded', 'false'); $('#resultsToggle').focus(); }
+        if (state.tool !== 'pan') { state.calibration = null; state.measure = null; setTool('pan'); }
+      }
+    });
   }
 
   function toggleNearest(point) {
@@ -1016,7 +1233,7 @@
 
   function boot() {
     installUi(); wireEvents(); loadTheme(); renderQueue(); renderSummary(null); renderChannelMap(null); updateScaleUi(); updateResults(); els.empty.hidden = false; els.toolbar.hidden = true;
-    window.DropletMeasure = {state, addFiles, loadCurrent, detect, quantifySession, measurePlane, exportRows, getPlane, renderCurrentImage, updateResults};
+    window.DropletMeasure = {state, addFiles, loadCurrent, detect, batchAnalyze, quantifySession, measurePlane, exportRows, getPlane, renderCurrentImage, renderOverlay, updateResults};
   }
 
   boot();

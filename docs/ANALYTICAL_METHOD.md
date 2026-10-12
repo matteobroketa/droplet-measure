@@ -6,7 +6,7 @@ Droplet Measure is an interactive analysis aid for approximately circular drople
 
 ## Source data and coordinates
 
-TIFF metadata and all reachable primary image directories are inspected before the browser raster fallback. The decoder preserves source samples as typed arrays. Segmentation may use a performance-scaled copy (maximum side 1400 px), but it records the scaled dimensions and separate `scaleX`/`scaleY`. Centers and equivalent radii are mapped back to original pixel coordinates. Quantification always reads the original plane.
+TIFF metadata and all reachable primary image directories are inspected before the browser raster fallback. The decoder preserves source samples as typed arrays. Segmentation may use an isotropically scaled copy (maximum side 1400 px); the rounded output dimensions and actual `scaleX`/`scaleY` are recorded. Centers and equivalent radii are mapped back to original pixel coordinates. Quantification always reads the original plane.
 
 The display canvas is only a visualization. It may use min/max contrast stretching and pseudocolor; neither is used for scientific measurements.
 
@@ -21,7 +21,7 @@ Calibration is optional and separate from the canonical pixel-based detection li
 3. Apply zero to five 3×3 smoothing passes.
 4. Use Otsu thresholding by default, or a user threshold. `Auto`, `Dark`, and `Bright` polarity are available; adaptive local-contrast masks are a fallback when a fixed mask has no candidates.
 5. Extract four-connected components, reject border-touching components, and filter by equivalent-circle diameter and circularity.
-6. Report `d = 2 × sqrt(area / π)` and `circularity = 4πA/P²`, with the caveat that the pixel-grid perimeter is an approximate filter statistic.
+6. Report `d = 2 × sqrt(area / π)` and `circularity = min(1, 4πA/P²)`, with the caveat that the pixel-grid perimeter is an approximate filter statistic. No empirical multiplier is applied.
 
 Auto polarity is deliberately heuristic. A brightfield, phase, fluorescence, or reference channel can be used when it has droplet contrast, but the role label does not turn a channel into fluorescence and does not override visual review.
 
@@ -48,9 +48,11 @@ OME/TIFF effective bit-depth metadata is retained as provenance, but it is not s
 
 ## Review and revision safety
 
-Changing display channel, composite view, zoom, or overlay visibility does not rerun analysis. Changing detection channel, frame, polarity, threshold, smoothing, size, or circularity invalidates results and debounces a new run. A monotonically increasing analysis job ID prevents a slower old run from replacing a newer selection. One-to-one center/radius matching transfers exclusion state where unambiguous; unmatched candidates are kept in an archive for recovery. Excluded candidates remain in CSV/JSON with `included=false`, while summary statistics use included candidates only.
+Changing display channel, composite view, zoom, or overlay visibility does not rerun analysis. Changing detection channel, frame, polarity, threshold, smoothing, size, circularity, measured channels, or saturation ceilings invalidates results. Each job snapshots its channel, frame, settings, and saturation configuration; it commits measurements only if the job and configuration are still current. Review decisions are archived by dataset, detection channel, Z, and T; center/radius matching only occurs within that frame. Excluded candidates remain in CSV/JSON with `included=false`, while summary statistics use included candidates only. A valid zero-candidate analysis can be exported as a run JSON and header-only per-droplet CSV.
 
 ## Validation guidance
+
+The automated regression suite covers isotropic wide/tall scaling, the documented circularity formula, exact synthetic ROI statistics, invalid samples, and unknown/known saturation semantics. Headless Chromium tests import synthetic 16-bit TIFF and named three-channel OME-TIFF files, verify exact known channel means and display independence, exercise frame-local exclusions, configuration invalidation, zero-result exports, and batch preflight. These deterministic fixtures do not validate automatic segmentation against representative laboratory images or an independent image-analysis tool.
 
 Before production or publication use:
 

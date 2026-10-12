@@ -1,27 +1,38 @@
 name: Deploy GitHub Pages
 on:
-  push:
+  workflow_run:
+    workflows: [Validate static app]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
 permissions:
   contents: read
-  pages: write
-  id-token: write
 concurrency:
   group: pages
   cancel-in-progress: true
 jobs:
   deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: actions/configure-pages@v5
+      - name: Assemble static application artifact
+        run: |
+          mkdir -p _site
+          cp index.html tiff.js analysis-core.js build-info.js app.js _site/
+          printf "window.DROPLET_MEASURE_BUILD_ID = '%s';\n" "${{ github.event.workflow_run.head_sha }}" > _site/build-info.js
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
