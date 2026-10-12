@@ -18,14 +18,21 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check tiff.js
-      - name: Check inline JavaScript syntax
+          node --check app.js
+      - name: Check JavaScript entrypoints
         run: |
           node <<'NODE'
-          const fs = require('fs');
+          const fs = require('node:fs');
           const html = fs.readFileSync('index.html', 'utf8');
-          const start = html.indexOf('<script>');
-          const end = html.lastIndexOf('</script>');
-          if (start < 0 || end < 0 || end <= start) throw new Error('inline script not found');
-          new Function(html.slice(start + '<script>'.length, end));
-          console.log('inline JavaScript syntax: OK');
+
+          for (const file of ['tiff.js', 'app.js']) {
+            if (!fs.existsSync(file)) {
+              throw new Error(`Missing file: ${file}`);
+            }
+            if (!html.includes(`src="${file}"`)) {
+              throw new Error(`index.html does not load ${file}`);
+            }
+          }
+
+          console.log('JavaScript entrypoints: OK');
           NODE
