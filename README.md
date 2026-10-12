@@ -1,77 +1,48 @@
 # Droplet Measure
 
-A local-first browser application for calibrating, detecting, reviewing, and exporting microfluidic droplet measurements from microscopy images.
+Droplet Measure is a browser-only microscopy analysis tool for detecting approximately circular droplets, reviewing candidates, measuring raw channel intensity, and exporting reproducible results. Files stay in the browser; the app has no backend, analytics, or upload endpoint.
 
-The app is intentionally static: there is no backend, no upload service, and no build step. Images are decoded and analyzed in browser memory, including common TIFF variants through the bundled local fallback decoder. This makes the repository suitable for GitHub Pages and for sensitive experimental images that should remain on the user's machine.
+## Workflow
 
-## Live workflow
+1. Open one PNG, JPEG, classic TIFF, or OME-TIFF dataset. A TIFF is inspected locally before any browser image fallback.
+2. Review the dataset summary: dimensions, typed pixel format, C/Z/T axes, channel names, and warnings.
+3. Use the suggested detection channel or choose another source. The display channel is independent from detection.
+4. For a multipage TIFF without trustworthy metadata, confirm whether pages are channels, Z slices, or time points before detection.
+5. Choose the frame, detection settings, and channels to quantify. Changing detection settings reruns the analysis after a short debounce and keeps defensible manual exclusions where possible.
+6. Review the overlay and table. Results use the same droplet ROIs on every selected raw channel.
+7. Export CSV, JSON, an annotated preview PNG, or the analysis recipe.
 
-1. Open, drag/drop, or paste one or more microscopy images.
-2. Calibrate using a known line length or direct µm/pixel value.
-3. Choose the analysis channel (**To Gray**, **Red**, **Green**, **Blue**, or **RGB composite**) and configure detection settings.
-4. Detect droplets, then adjust settings live while the overlay and measurements update automatically.
-5. Inspect the overlay and exclude false positives by clicking them in **Review** mode.
-6. Optionally attach a registered fluorescence image of the same dimensions to sample mean intensity per droplet.
-7. Export CSV, JSON, or an annotated PNG.
+## Scientific data model
 
-## Design goals
+The loader keeps the original typed pixel planes (`Uint8Array`, `Uint16Array`, signed integer arrays, or `Float32Array`) separate from display previews. Display contrast and pseudocolor are view-only. Raw measurements are sampled from the original source coordinates, not from a downscaled canvas. RGB color files remain explicitly labelled color data; their derived luminance and optional components are not silently called fluorescence.
 
-- Browser-only processing; no experimental data leaves the device.
-- Fast static deployment with no dependency chain.
-- Explicit calibration and review rather than silently producing measurements.
-- Reversible inclusion/exclusion instead of destructive deletion.
-- Keyboard-aware, reduced-motion-aware, responsive UI.
-- Analysis settings included in JSON exports for reproducibility.
-- Batch support for applying the same settings across queued images.
+The default ROI is an inner circle with radius `0.72 ×` the detected equivalent-circle radius. Each channel reports `N`, sum, mean, median, minimum, maximum, sample standard deviation, invalid-pixel count, optional saturation information only after a known per-channel ceiling is entered, and QC flags. Excluded candidates remain in exports with `included=false`.
 
-## Detection model
+See [docs/CHANNELS_AND_TIFF.md](docs/CHANNELS_AND_TIFF.md) for the dataset contract, TIFF mapping rules, supported formats, and limitations. See [docs/ANALYTICAL_METHOD.md](docs/ANALYTICAL_METHOD.md) for the detection and quantification method.
 
-The detector creates a performance-scaled analysis copy (maximum side 1400 px), applies the selected channel, optionally smooths it, and calculates an Otsu threshold by default. Connected components are extracted from dark or bright foreground masks, filtered by diameter and circularity, and mapped back to original-image coordinates. Auto mode evaluates global and local-contrast masks so ordinary brightfield gradients do not silently produce an empty result. In Auto polarity mode, the candidate set with the stronger circular-object score is selected.
+## Development
 
-Equivalent-circle diameter is calculated as:
-
-`d = 2 × sqrt(area / π)`
-
-This model is well suited to separated, approximately circular droplets with useful foreground/background contrast. It is deliberately transparent and dependency-free; it is not a replacement for a validated segmentation model when droplets overlap, touch strongly, or have highly nonuniform illumination.
-
-See [docs/ANALYTICAL_METHOD.md](docs/ANALYTICAL_METHOD.md) for limitations and validation guidance.
-
-## Run locally
-
-No installation is required. Open `index.html` in a modern browser.
-
-For development with a local server:
+There is no build step or dependency install:
 
 ```bash
 python -m http.server 8000
 ```
 
-Then open `http://localhost:8000`.
+Open <http://localhost:8000>. A local HTTP server is recommended because browser file and module policies differ when opening HTML directly from disk.
 
-## GitHub Pages
+The repository is static and remains suitable for GitHub Pages. `index.html` loads the local `tiff.js` decoder and `app.js`; no remote scripts are required.
 
-The included workflow deploys the repository root to GitHub Pages on pushes to `main`. In GitHub, set **Settings → Pages → Source** to **GitHub Actions** if it is not already selected.
+## Validation
 
-## Repository structure
+Syntax checks:
 
-```text
-.
-├── index.html
-├── tiff.js
-├── docs/
-│   └── ANALYTICAL_METHOD.md
-├── .github/workflows/
-│   ├── pages.yml
-│   └── validate.yml
-├── .nojekyll
-├── LICENSE
-└── README.md
+```bash
+node --check app.js
+node --check tiff.js
 ```
 
-## Privacy
+The browser smoke harness in `tests/cdp-eval.mjs` is a small local helper for exercising a running Chromium/Edge target; it is not part of the production app.
 
-All images are handled with browser APIs and remain local. The app contains no analytics, remote JavaScript libraries, tracking pixels, or upload endpoints.
+## Privacy and license
 
-## License
-
-MIT.
+Images, decoded planes, detections, and exports are handled locally. The project is MIT licensed.
