@@ -16,12 +16,12 @@ Calibration is applied linearly to equivalent-circle diameter. Calibration value
 ## Segmentation
 
 1. The source image is reduced only for segmentation performance, with a maximum analysis dimension of 1400 px. Coordinates and sizes are mapped back to original pixels.
-2. RGB values are converted to luminance using Rec. 709 coefficients.
+2. The selected channel is analyzed: **To Gray** uses Rec. 709 luminance, while **Red**, **Green**, **Blue**, and **RGB composite** preserve the SCDA-style channel workflow.
 3. Zero to five 3×3 smoothing passes can be applied.
 4. The default threshold uses Otsu's between-class variance criterion. A manual 8-bit threshold is available.
-5. The foreground can be dark, bright, or automatically selected. Auto evaluates both polarity masks and selects the set with the larger summed circularity score.
+5. The foreground can be dark, bright, or automatically selected. Auto evaluates global and local-contrast masks, both polarities, and selects the strongest circular-object candidate set. The local-contrast path makes brightfield images with uneven illumination usable without requiring a global threshold to work everywhere.
 6. Four-connected components are extracted. Objects touching the analysis border are excluded.
-7. Candidate objects are filtered by equivalent-circle diameter and circularity.
+7. Candidate objects are filtered by equivalent-circle diameter and circularity; the diameter bounds are applied to the reported equivalent-circle diameter, not only to a permissive pre-filter.
 
 Circularity is calculated as `4πA/P²`, where `A` is component area and `P` is the four-neighbor boundary perimeter estimate. Because perimeter is pixel-grid dependent, circularity should be treated as a segmentation filter rather than a high-precision shape descriptor.
 
@@ -38,7 +38,7 @@ When a fluorescence image is attached, it must have exactly the same pixel dimen
 - Ring-like droplets with interiors similar to background can be poorly represented by filled-component segmentation.
 - Very small objects are sensitive to downsampling and pixel-grid perimeter effects.
 - Auto polarity is heuristic and should be verified visually.
-- Common classic TIFF variants are decoded by the bundled local fallback; BigTIFF and some specialized compressed variants may still need to be exported as PNG or JPEG.
+- Common classic TIFF variants are decoded by the bundled local fallback, including 8/16/32-bit strips or tiles, LZW, PackBits, Deflate, predictors, palette images, and planar RGB. BigTIFF, JPEG-compressed TIFF, malformed exports, and some specialized variants may still need to be exported as PNG or JPEG.
 - Fluorescence statistics assume registered images and are raw intensity summaries, not calibrated concentrations.
 
 ## Recommended validation

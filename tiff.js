@@ -44,6 +44,20 @@
     return /image\/(?:x-)?tiff?/i.test(file.type || '') || /\.(?:tif|tiff)$/i.test(file.name || '');
   }
 
+  async function looksLikeTiff(file) {
+    if (isTiff(file)) return true;
+    try {
+      const header = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+      if (header.length < 4) return false;
+      const little = header[0] === 0x49 && header[1] === 0x49;
+      const big = header[0] === 0x4d && header[1] === 0x4d;
+      const magic = little ? header[2] | (header[3] << 8) : big ? (header[2] << 8) | header[3] : 0;
+      return (little || big) && (magic === 42 || magic === 43);
+    } catch {
+      return false;
+    }
+  }
+
   function loadImage(url) {
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -424,6 +438,41 @@
     fail('This TIFF uses an unsupported floating-point sample depth.');
   }
 
+  function writeSample(view, offset, meta, value) {
+    if (meta.sampleFormat === 1) {
+      if (meta.bits === 8) return view.setUint8(offset, value);
+      if (meta.bits === 16) return view.setUint16(offset, value, meta.little);
+      return view.setUint32(offset, value, meta.little);
+    }
+    if (meta.sampleFormat === 2) {
+      if (meta.bits === 8) return view.setInt8(offset, value);
+      if (meta.bits === 16) return view.setInt16(offset, value, meta.little);
+      return view.setInt32(offset, value, meta.little);
+    }
+    fail('This TIFF uses an unsupported predictor for floating-point samples.');
+  }
+
+  function applyPredictor(meta, segment, bytes) {
+    if (meta.predictor !== 2) return;
+    if (meta.sampleFormat === 3) fail('This TIFF uses an unsupported predictor for floating-point samples.');
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const channels = meta.planar === 2 ? 1 : meta.samples;
+    const stride = meta.planar === 2 ? 1 : meta.samples;
+    const modulus = 2 ** meta.bits;
+    for (let row = 0; row < segment.rowCount; row++) for (let column = 1; column < segment.storageWidth; column++) {
+      for (let channel = 0; channel < channels; channel++) {
+        const position = (row * segment.storageWidth + column) * stride + channel;
+        const previousPosition = (row * segment.storageWidth + column - 1) * stride + channel;
+        const offset = position * meta.bytesPerSample;
+        const previousOffset = previousPosition * meta.bytesPerSample;
+        let value = sample(view, offset, meta);
+        const previous = sample(view, previousOffset, meta);
+        value = meta.sampleFormat === 1 ? (value + previous) % modulus : value + previous;
+        writeSample(view, offset, meta, value);
+      }
+    }
+  }
+
   function applyOrientation(x, y, width, height, orientation) {
     switch (orientation) {
       case 2: return [width - 1 - x, y];
@@ -454,21 +503,17 @@
     const decoded = [];
     for (const segment of list) {
       const expected = expectedSegmentBytes(segment);
-      decoded.push(await decodeSegment(meta, segment.offset, segment.count, expected));
+      const bytes = await decodeSegment(meta, segment.offset, segment.count, expected);
+      applyPredictor(meta, segment, bytes);
+      decoded.push(bytes);
     }
+    const decodedViews = decoded.map(bytes => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength));
 
-    const sampleAt = (segment, bytes, row, column, channel) => {
+    const sampleAt = (segment, view, row, column, channel) => {
       const planeChannel = meta.planar === 2 ? 0 : channel;
       const position = (row * segment.storageWidth + column) * (meta.planar === 2 ? 1 : meta.samples) + planeChannel;
       const valueOffset = position * meta.bytesPerSample;
-      let value = sample(meta.view, bytes.byteOffset + valueOffset, meta);
-      if (meta.predictor === 2 && column > 0) {
-        const previousPosition = (row * segment.storageWidth + column - 1) * (meta.planar === 2 ? 1 : meta.samples) + planeChannel;
-        const previous = sample(meta.view, bytes.byteOffset + previousPosition * meta.bytesPerSample, meta);
-        if (meta.sampleFormat === 1) value = (value + previous) % (2 ** meta.bits);
-        else value += previous;
-      }
-      return value;
+      return sample(view, valueOffset, meta);
     };
 
     let min = Infinity;
@@ -479,11 +524,11 @@
     } else {
       for (let i = 0; i < list.length; i++) {
         const segment = list[i];
-        const bytes = decoded[i];
+        const view = decodedViews[i];
         const channels = meta.planar === 2 ? [segment.plane] : Array.from({length: meta.samples}, (_, channel) => channel);
         for (let row = 0; row < segment.rowCount; row++) for (let column = 0; column < segment.storageWidth; column++) {
           for (const channel of channels) {
-            const value = sampleAt(segment, bytes, row, column, channel);
+            const value = sampleAt(segment, view, row, column, channel);
             if (Number.isFinite(value) && (meta.photometric !== 2 || channel < 3)) {
               min = Math.min(min, value);
               max = Math.max(max, value);
@@ -514,36 +559,52 @@
       output.data[index + 3] = a;
     };
 
-    for (let i = 0; i < list.length; i++) {
-      const segment = list[i];
-      const bytes = decoded[i];
-      const channels = meta.planar === 2 ? [segment.plane] : Array.from({length: meta.samples}, (_, channel) => channel);
-      for (let row = 0; row < segment.rowCount; row++) for (let column = 0; column < segment.storageWidth; column++) {
-        const x = segment.colStart + column;
-        const y = segment.rowStart + row;
-        if (x >= meta.width || y >= meta.height) continue;
-        const valuesAtPixel = new Array(meta.samples);
-        for (const channel of channels) valuesAtPixel[channel] = sampleAt(segment, bytes, row, column, channel);
-        let r;
-        let g;
-        let b;
-        if (meta.photometric === 3) {
-          const index = Math.max(0, Math.min((1 << Math.min(meta.bits, 16)) - 1, Math.round(valuesAtPixel[0] || 0)));
-          const entries = (1 << Math.min(meta.bits, 16));
-          r = normalized(meta.palette[index], 0, 65535);
-          g = normalized(meta.palette[entries + index], 0, 65535);
-          b = normalized(meta.palette[entries * 2 + index], 0, 65535);
-        } else if (meta.photometric === 2) {
-          r = normalized(valuesAtPixel[0], min, max);
-          g = normalized(valuesAtPixel[1], min, max);
-          b = normalized(valuesAtPixel[2], min, max);
-        } else {
-          const value = normalized(valuesAtPixel[0], min, max);
-          r = g = b = meta.photometric === 0 ? 255 - value : value;
-        }
-        const alpha = meta.samples >= 4 ? normalized(valuesAtPixel[3], min, max) : 255;
-        put(x, y, r, g, b, alpha);
+    const stripCount = meta.tiled ? 0 : meta.offsets.length / (meta.planar === 2 ? meta.samples : 1);
+    const across = meta.tiled ? Math.ceil(meta.width / meta.tileWidth) : 1;
+    const down = meta.tiled ? Math.ceil(meta.height / meta.tileLength) : stripCount;
+    const pixelRef = (x, y, channel) => {
+      const plane = meta.planar === 2 ? channel : 0;
+      let index;
+      let row;
+      let column;
+      if (meta.tiled) {
+        const tx = Math.floor(x / meta.tileWidth);
+        const ty = Math.floor(y / meta.tileLength);
+        index = plane * across * down + ty * across + tx;
+        row = y - ty * meta.tileLength;
+        column = x - tx * meta.tileWidth;
+      } else {
+        const strip = Math.floor(y / meta.tileLength);
+        index = plane * stripCount + strip;
+        row = y - strip * meta.tileLength;
+        column = x;
       }
+      const segment = list[index];
+      if (!segment) fail('The TIFF pixel layout is inconsistent.');
+      return sampleAt(segment, decodedViews[index], row, column, channel);
+    };
+
+    for (let y = 0; y < meta.height; y++) for (let x = 0; x < meta.width; x++) {
+      const valuesAtPixel = Array.from({length: meta.samples}, (_, channel) => pixelRef(x, y, channel));
+      let r;
+      let g;
+      let b;
+      if (meta.photometric === 3) {
+        const index = Math.max(0, Math.min((1 << Math.min(meta.bits, 16)) - 1, Math.round(valuesAtPixel[0] || 0)));
+        const entries = (1 << Math.min(meta.bits, 16));
+        r = normalized(meta.palette[index], 0, 65535);
+        g = normalized(meta.palette[entries + index], 0, 65535);
+        b = normalized(meta.palette[entries * 2 + index], 0, 65535);
+      } else if (meta.photometric === 2) {
+        r = normalized(valuesAtPixel[0], min, max);
+        g = normalized(valuesAtPixel[1], min, max);
+        b = normalized(valuesAtPixel[2], min, max);
+      } else {
+        const value = normalized(valuesAtPixel[0], min, max);
+        r = g = b = meta.photometric === 0 ? 255 - value : value;
+      }
+      const alpha = meta.samples >= 4 ? normalized(valuesAtPixel[3], 0, 2 ** meta.bits - 1) : 255;
+      put(x, y, r, g, b, alpha);
     }
     context.putImageData(output, 0, 0);
     return await canvasImage(canvas);
@@ -559,7 +620,7 @@
       try {
         return await bitmapFallback(file);
       } catch (bitmapError) {
-        if (!isTiff(file)) throw new Error(bitmapError?.message || imageError?.message || 'The browser could not decode this image.');
+        if (!(await looksLikeTiff(file))) throw new Error(bitmapError?.message || imageError?.message || 'The browser could not decode this image.');
         try {
           return await decodeTiff(await file.arrayBuffer());
         } catch (tiffError) {

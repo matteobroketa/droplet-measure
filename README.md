@@ -8,10 +8,11 @@ The app is intentionally static: there is no backend, no upload service, and no 
 
 1. Open, drag/drop, or paste one or more microscopy images.
 2. Calibrate using a known line length or direct µm/pixel value.
-3. Configure diameter and circularity constraints.
-4. Detect droplets, inspect the overlay, and exclude false positives by clicking them in **Review** mode.
-5. Optionally attach a registered fluorescence image of the same dimensions to sample mean intensity per droplet.
-6. Export CSV, JSON, or an annotated PNG.
+3. Choose the analysis channel (**To Gray**, **Red**, **Green**, **Blue**, or **RGB composite**) and configure detection settings.
+4. Detect droplets, then adjust settings live while the overlay and measurements update automatically.
+5. Inspect the overlay and exclude false positives by clicking them in **Review** mode.
+6. Optionally attach a registered fluorescence image of the same dimensions to sample mean intensity per droplet.
+7. Export CSV, JSON, or an annotated PNG.
 
 ## Design goals
 
@@ -25,7 +26,7 @@ The app is intentionally static: there is no backend, no upload service, and no 
 
 ## Detection model
 
-The detector creates a performance-scaled analysis copy (maximum side 1400 px), converts it to luminance, optionally smooths it, and calculates an Otsu threshold by default. Connected components are extracted from dark or bright foreground masks, filtered by diameter and circularity, and mapped back to original-image coordinates. In Auto polarity mode, both polarities are evaluated and the candidate set with the stronger circular-object score is selected.
+The detector creates a performance-scaled analysis copy (maximum side 1400 px), applies the selected channel, optionally smooths it, and calculates an Otsu threshold by default. Connected components are extracted from dark or bright foreground masks, filtered by diameter and circularity, and mapped back to original-image coordinates. Auto mode evaluates global and local-contrast masks so ordinary brightfield gradients do not silently produce an empty result. In Auto polarity mode, the candidate set with the stronger circular-object score is selected.
 
 Equivalent-circle diameter is calculated as:
 
