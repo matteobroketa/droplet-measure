@@ -2,7 +2,7 @@
 
 A local-first browser application for calibrating, detecting, reviewing, and exporting microfluidic droplet measurements from microscopy images.
 
-The app is intentionally static: there is no backend, no upload service, and no build step. Images are decoded and analyzed in browser memory, which makes the repository suitable for GitHub Pages and for sensitive experimental images that should remain on the user's machine.
+The app is intentionally static: there is no backend, no upload service, and no build step. Images are decoded and analyzed in browser memory, including common TIFF variants through the bundled local fallback decoder. This makes the repository suitable for GitHub Pages and for sensitive experimental images that should remain on the user's machine.
 
 ## Live workflow
 
@@ -56,6 +56,7 @@ The included workflow deploys the repository root to GitHub Pages on pushes to `
 ```text
 .
 ├── index.html
+├── tiff.js
 ├── docs/
 │   └── ANALYTICAL_METHOD.md
 ├── .github/workflows/

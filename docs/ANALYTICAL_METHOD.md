@@ -38,7 +38,7 @@ When a fluorescence image is attached, it must have exactly the same pixel dimen
 - Ring-like droplets with interiors similar to background can be poorly represented by filled-component segmentation.
 - Very small objects are sensitive to downsampling and pixel-grid perimeter effects.
 - Auto polarity is heuristic and should be verified visually.
-- Browser-decoded TIFF support depends on the browser; PNG/JPEG are the safest formats for static deployment.
+- Common classic TIFF variants are decoded by the bundled local fallback; BigTIFF and some specialized compressed variants may still need to be exported as PNG or JPEG.
 - Fluorescence statistics assume registered images and are raw intensity summaries, not calibrated concentrations.
 
 ## Recommended validation

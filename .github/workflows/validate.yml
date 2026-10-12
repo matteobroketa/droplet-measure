@@ -10,10 +10,14 @@ jobs:
       - name: Check required files and accidental remote dependencies
         run: |
           test -f index.html
+          test -f tiff.js
           test -f README.md
           test -f docs/ANALYTICAL_METHOD.md
           ! grep -E '<script[^>]+src="https?://|<link[^>]+href="https?://' index.html
           grep -q '<!doctype html>' index.html
+      - name: Check JavaScript syntax
+        run: |
+          node --check tiff.js
       - name: Check inline JavaScript syntax
         run: |
           node <<'NODE'

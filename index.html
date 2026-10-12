@@ -31,8 +31,8 @@ html[data-theme=dark]{--bg:#0e1317;--panel:#141b20;--panel2:#192127;--text:#ecf2
   <div class="brand"><span class="mark" aria-hidden="true"></span><span>Droplet Measure</span><small>local image analysis</small></div>
   <span class="pill"><span class="status-dot"></span> browser-only</span>
   <div class="top-actions"><button class="btn ghost" id="themeBtn" title="Toggle theme" aria-pressed="true">Theme</button><button class="btn" id="openBtn">Open images</button></div>
-  <input id="fileInput" type="file" accept="image/*" multiple hidden />
-  <input id="fluorInput" type="file" accept="image/*" hidden />
+  <input id="fileInput" type="file" accept="image/*,.tif,.tiff" multiple hidden />
+  <input id="fluorInput" type="file" accept="image/*,.tif,.tiff" hidden />
 </header>
 <main class="layout">
 <aside class="side left">
@@ -68,7 +68,7 @@ html[data-theme=dark]{--bg:#0e1317;--panel:#141b20;--panel2:#192127;--text:#ecf2
 </aside>
 
 <section class="workspace" id="workspace" tabindex="0" aria-label="Image workspace">
-  <div class="empty" id="empty"><div class="dropzone" id="dropzone"><h1>Drop microscopy images here</h1><p>PNG, JPEG, TIFF supported where your browser can decode them. Files never leave this device.</p><button class="btn primary" id="emptyOpen">Choose images</button><div class="help" style="margin-top:14px"><span class="kbd">Ctrl/Cmd + V</span> paste image · wheel to zoom · drag to pan</div></div></div>
+  <div class="empty" id="empty"><div class="dropzone" id="dropzone"><h1>Drop microscopy images here</h1><p>PNG, JPEG, and common TIFF variants are decoded locally. Files never leave this device.</p><button class="btn primary" id="emptyOpen">Choose images</button><div class="help" style="margin-top:14px"><span class="kbd">Ctrl/Cmd + V</span> paste image · wheel to zoom · drag to pan</div></div></div>
   <div class="canvas-wrap" id="canvasWrap"><canvas id="imageCanvas"></canvas><canvas id="overlayCanvas"></canvas></div>
   <div class="canvas-toolbar" id="canvasToolbar" hidden><button class="toolbtn active" data-tool="pan">Pan</button><button class="toolbtn" data-tool="measure">Measure</button><button class="toolbtn" data-tool="exclude">Review</button><button class="toolbtn" id="fitBtn">Fit</button><span class="zoom-label" id="zoomLabel">100%</span></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -89,6 +89,7 @@ html[data-theme=dark]{--bg:#0e1317;--panel:#141b20;--panel2:#192127;--text:#ecf2
 </aside>
 </main>
 </div>
+<script src="tiff.js"></script>
 <script>
 'use strict';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -104,8 +105,8 @@ function imageUnit(){return state.scale?state.scaleUnit:'px'}
 function pxToUnit(px){return state.scale?px*state.scale:px}
 function escapeCsv(v){const s=String(v??'');return /[",\n]/.test(s)?'"'+s.replaceAll('"','""')+'"':s}
 function download(name,blob){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-async function decodeFile(file){const url=URL.createObjectURL(file);try{const img=new Image();img.decoding='async';img.src=url;await img.decode();return {file,name:file.name,img,url,width:img.naturalWidth,height:img.naturalHeight,detections:[],analyzed:false,scale:null,scaleUnit:'µm',fluor:null}}catch(e){URL.revokeObjectURL(url);throw e}}
-async function addFiles(files){const images=[...files].filter(f=>f.type.startsWith('image/')||/\.(png|jpe?g|tif?f|bmp|webp)$/i.test(f.name));if(!images.length)return toast('No readable image files found');let added=0;for(const f of images){try{state.images.push(await decodeFile(f));added++}catch{toast(`Could not decode ${f.name}`)}}if(added&&state.index<0)state.index=0;renderQueue();loadCurrent();}
+async function decodeFile(file){const decoded=await window.decodeRasterFile(file);return {file,name:file.name,img:decoded.img,url:decoded.url,width:decoded.width,height:decoded.height,detections:[],analyzed:false,scale:null,scaleUnit:'µm',fluor:null}}
+async function addFiles(files){const images=[...files].filter(f=>(f.type||'').startsWith('image/')||/\.(png|jpe?g|tif?f|bmp|webp)$/i.test(f.name));if(!images.length)return toast('No readable image files found');let added=0;for(const f of images){try{state.images.push(await decodeFile(f));added++}catch(error){toast(`${f.name}: ${error?.message||'Could not decode the image'}`)}}if(added&&state.index<0)state.index=0;renderQueue();loadCurrent();}
 function renderQueue(){els.queue.replaceChildren();state.images.forEach((im,i)=>{const b=document.createElement('button');b.className='thumb'+(i===state.index?' active':'');const thumb=document.createElement('img');thumb.alt=`Preview of ${im.name}`;thumb.src=im.url;const label=document.createElement('span');label.title=im.name;label.textContent=im.name;b.append(thumb,label);b.onclick=()=>{saveCurrentState();state.index=i;loadCurrent()};els.queue.appendChild(b)});$('#imageCounter').textContent=`${state.images.length} image${state.images.length===1?'':'s'}`;$('#step1').classList.toggle('done',state.images.length>0)}
 function saveCurrentState(){const im=current();if(!im)return;im.detections=state.detections;im.analyzed=state.analyzed;im.scale=state.scale;im.scaleUnit=state.scaleUnit;im.fluor=state.fluor}
 function loadCurrent(){const im=current();state.calibration=null;state.measure=null;state.drag=null;state.tool='pan';els.overlay.style.cursor='grab';els.workspace.classList.remove('detection-flash','is-analyzing');if(!im){state.detections=[];state.analyzed=false;state.scale=null;state.scaleUnit='µm';state.fluor=null;els.empty.hidden=false;els.toolbar.hidden=true;updateFluorUi();updateScaleUi();updateResults();return}state.detections=im.detections||[];state.analyzed=im.analyzed??false;state.scale=im.scale??null;state.scaleUnit=im.scaleUnit||'µm';state.fluor=im.fluor||null;els.empty.hidden=true;els.toolbar.hidden=false;els.image.width=els.overlay.width=im.width;els.image.height=els.overlay.height=im.height;ictx.clearRect(0,0,im.width,im.height);ictx.drawImage(im.img,0,0);$$('.toolbtn[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool==='pan'));fitImage();updateScaleUi();updateFluorUi();updateResults();renderQueue();$('#detectBtn').disabled=false;$('#fluorBtn').disabled=false;$('#batchBtn').disabled=state.images.length<2;$('#step3').classList.toggle('done',state.detections.length>0);replayClass(els.workspace,'image-ready')}
