@@ -2,6 +2,26 @@
   'use strict';
 
   const ROI_RADIUS_FRACTION = 0.72;
+  const DEFAULT_DETECTION_SETTINGS = Object.freeze({
+    minDiameterPx: 10,
+    maxDiameterPx: 400,
+    minCircularity: 0.4,
+    smoothing: 2,
+    polarity: 'auto',
+    autoThreshold: true,
+    threshold: 128
+  });
+
+  function normalizeDetectionSettings(settings = {}) {
+    const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+    const minDiameterPx = Math.max(1, finite(settings.minDiameterPx, DEFAULT_DETECTION_SETTINGS.minDiameterPx));
+    const maxDiameterPx = Math.max(minDiameterPx, finite(settings.maxDiameterPx, DEFAULT_DETECTION_SETTINGS.maxDiameterPx));
+    const minCircularity = Math.max(.2, Math.min(.98, finite(settings.minCircularity, DEFAULT_DETECTION_SETTINGS.minCircularity)));
+    const smoothing = Math.max(0, Math.min(5, Math.round(finite(settings.smoothing, DEFAULT_DETECTION_SETTINGS.smoothing))));
+    const threshold = Math.max(0, Math.min(255, finite(settings.threshold, DEFAULT_DETECTION_SETTINGS.threshold)));
+    const polarity = ['auto', 'dark', 'bright'].includes(settings.polarity) ? settings.polarity : DEFAULT_DETECTION_SETTINGS.polarity;
+    return {minDiameterPx, maxDiameterPx, minCircularity, smoothing, polarity, autoThreshold: Boolean(settings.autoThreshold ?? DEFAULT_DETECTION_SETTINGS.autoThreshold), threshold};
+  }
 
   function detectionSize(sourceWidth, sourceHeight, maxSide = 1400) {
     const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
@@ -55,7 +75,7 @@
     };
   }
 
-  const api = {ROI_RADIUS_FRACTION, detectionSize, circularity, measurePlane};
+  const api = {ROI_RADIUS_FRACTION, DEFAULT_DETECTION_SETTINGS, normalizeDetectionSettings, detectionSize, circularity, measurePlane};
   globalThis.DropletMeasureCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })();

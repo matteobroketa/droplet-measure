@@ -12,15 +12,15 @@ The display canvas is only a visualization. It may use min/max contrast stretchi
 
 ## Calibration
 
-Calibration is optional and separate from the canonical pixel-based detection limits. It can come from OME/TIFF physical pixel metadata, a user-entered micrometers-per-pixel value, or a drawn line over a known distance. Physical diameter uses the geometric mean of X/Y pixel scale for an equivalent-circle size. Raw intensity values are not changed by calibration.
+Calibration is optional and separate from the canonical pixel-based detection limits. It can come from OME/TIFF physical pixel metadata, a user-entered micrometers-per-pixel value, or a drawn line over a known distance. Physical diameter uses the geometric mean of X/Y pixel scale for an equivalent-circle size. Raw intensity values are not changed by calibration. A known EVOS-style export can encode the full field-of-view length in OME `PhysicalSizeX/Y`; when those values match the decoded image aspect ratio, the loader converts them to an implied per-pixel scale and records a provenance warning for verification.
 
 ## Detection
 
 1. Select one raw intensity plane. For a multichannel dataset this is the explicit detection channel; the app never silently averages channels.
 2. Convert that plane to a temporary 8-bit segmentation representation using sampled display-range normalization. This conversion is segmentation-only.
 3. Apply zero to five 3×3 smoothing passes.
-4. Use Otsu thresholding by default, or a user threshold. `Auto`, `Dark`, and `Bright` polarity are available; adaptive local-contrast masks are a fallback when a fixed mask has no candidates.
-5. Extract four-connected components, reject border-touching components, and filter by equivalent-circle diameter and circularity.
+4. Use Otsu thresholding by default, or a user threshold. `Auto`, `Dark`, and `Bright` polarity are available; automatic polarity compares the dark and bright candidate populations, while adaptive local-contrast masks are a fallback when a fixed mask has no candidates.
+5. Extract four-connected components, reject border-touching components, and filter by equivalent-circle diameter and circularity. The default filter is 10–400 source pixels with minimum circularity 0.40; the lower circularity default is deliberate because the four-connected pixel-grid perimeter makes packed, otherwise round droplets score below a geometric circle.
 6. Report `d = 2 × sqrt(area / π)` and `circularity = min(1, 4πA/P²)`, with the caveat that the pixel-grid perimeter is an approximate filter statistic. No empirical multiplier is applied.
 
 Auto polarity is deliberately heuristic. A brightfield, phase, fluorescence, or reference channel can be used when it has droplet contrast, but the role label does not turn a channel into fluorescence and does not override visual review.

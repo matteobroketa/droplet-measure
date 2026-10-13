@@ -1,6 +1,30 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {circularity, detectionSize, measurePlane} = require('../analysis-core.js');
+const {circularity, detectionSize, measurePlane, DEFAULT_DETECTION_SETTINGS, normalizeDetectionSettings} = require('../analysis-core.js');
+
+test('detection defaults are tuned for packed brightfield droplets', () => {
+  assert.deepEqual(DEFAULT_DETECTION_SETTINGS, {
+    minDiameterPx: 10,
+    maxDiameterPx: 400,
+    minCircularity: .4,
+    smoothing: 2,
+    polarity: 'auto',
+    autoThreshold: true,
+    threshold: 128
+  });
+});
+
+test('detection settings are clamped and preserve explicit false values', () => {
+  assert.deepEqual(normalizeDetectionSettings({minDiameterPx: 0, maxDiameterPx: -1, minCircularity: 4, smoothing: 8, polarity: 'invalid', autoThreshold: false, threshold: 300}), {
+    minDiameterPx: 1,
+    maxDiameterPx: 1,
+    minCircularity: .98,
+    smoothing: 5,
+    polarity: 'auto',
+    autoThreshold: false,
+    threshold: 255
+  });
+});
 
 test('segmentation downsampling preserves wide and tall aspect ratios', () => {
   const wide = detectionSize(4000, 1000);

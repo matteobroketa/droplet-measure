@@ -821,6 +821,23 @@
     return multiplier === null ? null : Number(value) * multiplier;
   }
 
+  function scientificPixelSize(ome, first, warnings) {
+    const x = ome ? scientificToMicrometers(ome.physicalSizeX, ome.physicalSizeXUnit) ?? first.xPixelSizeUm : first.xPixelSizeUm;
+    const y = ome ? scientificToMicrometers(ome.physicalSizeY, ome.physicalSizeYUnit) ?? first.yPixelSizeUm : first.yPixelSizeUm;
+    const width = first.outputWidth, height = first.outputHeight;
+    const aspect = x && y ? x / y : null, imageAspect = width / height;
+    // Some microscope exports put the full field-of-view length in OME
+    // PhysicalSizeX/Y even though the OME schema defines those fields per
+    // pixel. When both values are larger than the image grid and preserve its
+    // aspect ratio, use the implied per-pixel scale and retain a provenance
+    // warning instead of reporting metre-scale droplets.
+    if (ome && x > 10 && y > 10 && Number.isFinite(aspect) && Math.abs(Math.log(aspect / imageAspect)) < .03) {
+      warnings.push('OME PhysicalSizeX/Y match the full image field of view rather than one pixel; values were divided by the decoded image dimensions for calibration. Verify the vendor metadata before comparing physical sizes.');
+      return {x: x / width, y: y / height, source: 'metadata-field-of-view'};
+    }
+    return {x, y, source: x || y ? 'metadata' : null};
+  }
+
   function xmlAttributes(element) {
     const result = {};
     if (!element) return result;
@@ -876,7 +893,7 @@
 
   function scientificRole(name, fluor) {
     const value = `${name || ''} ${fluor || ''}`.toLowerCase();
-    if (/brightfield|\bbf\b|phase|transmit|transmitted/.test(value)) return 'brightfield';
+    if (/brightfield|\bbf\b|phase|transmit|transmitted|\btrans\b|transmission/.test(value)) return 'brightfield';
     if (fluor || /fluor|gfp|rfp|fitc|tritc|cy\d|dapi|mcherry|mko/.test(value)) return 'fluorescence';
     return 'unknown';
   }
@@ -1093,11 +1110,12 @@
       warnings.push(`Found ${pages.length} TIFF pages without trustworthy C/Z/T metadata. Page roles require confirmation.`);
     }
     const rawPage = page => page.raw || null;
+    const pixelSizeUm = scientificPixelSize(ome, first, warnings);
     const dataset = {
       id: `dataset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       source: {name: file.name || 'image', sizeBytes: file.size || inventory.buffer.byteLength, format: 'TIFF'},
       width: first.outputWidth, height: first.outputHeight, axes, pixelType: scientificPixelType(first), significantBits: Math.max(1, Math.min(first.bits, ome?.significantBits || first.bits)),
-      pixelSizeUm: {x: ome ? (scientificToMicrometers(ome.physicalSizeX, ome.physicalSizeXUnit) ?? first.xPixelSizeUm) : first.xPixelSizeUm, y: ome ? (scientificToMicrometers(ome.physicalSizeY, ome.physicalSizeYUnit) ?? first.yPixelSizeUm) : first.yPixelSizeUm, source: ome?.physicalSizeX || first.xPixelSizeUm ? 'metadata' : null},
+      pixelSizeUm,
       saturationLevel: null,
       channels, planeIndex: [], pages, ambiguous, mappingValid, mappingResolved: !ambiguous && mappingValid, colorImage, alignment: {valid: matching && omeGridMatches, reason: matching && omeGridMatches ? null : 'All mapped source planes must share dimensions and orientation.'},
       provenance: {metadataSource: ome ? 'OME-XML' : 'TIFF IFD', axisMappingSource: mappingSource, warnings},

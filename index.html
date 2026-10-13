@@ -53,12 +53,13 @@ html[data-theme=dark]{--bg:#0e1317;--panel:#141b20;--panel2:#192127;--text:#ecf2
     <div class="field"><label><span>Threshold</span><span id="thresholdVal" class="mono">auto</span></label><input id="threshold" type="range" min="0" max="255" value="128" disabled></div>
     <div class="row" style="margin-top:8px"><input type="checkbox" id="autoThreshold" checked><label for="autoThreshold" class="muted">Otsu automatic threshold</label></div>
     <div class="grid2">
-      <div class="field"><label>Min equivalent diameter <span id="minUnit">px</span></label><input id="minDiameter" type="number" min="1" value="20"></div>
+      <div class="field"><label>Min equivalent diameter <span id="minUnit">px</span></label><input id="minDiameter" type="number" min="1" value="10"></div>
       <div class="field"><label>Max equivalent diameter <span id="maxUnit">px</span></label><input id="maxDiameter" type="number" min="1" value="400"></div>
     </div>
-    <div class="field"><label title="Approximate shape score from the segmented pixel boundary; not a physical shape measurement."><span>Min shape circularity (estimate)</span><span id="circVal" class="mono">0.65</span></label><input id="circularity" type="range" min="0.2" max="0.98" step="0.01" value="0.65"></div>
+    <div class="field"><label title="Approximate shape score from the segmented pixel boundary; not a physical shape measurement."><span>Min shape circularity (estimate)</span><span id="circVal" class="mono">0.40</span></label><input id="circularity" type="range" min="0.2" max="0.98" step="0.01" value="0.40"></div>
     <div class="field"><label><span>Smoothing</span><span id="smoothVal" class="mono">2 px</span></label><input id="smoothing" type="range" min="0" max="5" step="1" value="2"></div>
-    <div class="help">Detection analyzes an isotropically scaled copy, then maps measurements to original pixels. The mask preview shows the selected threshold method. Border-touching objects are excluded by default.</div>
+    <div class="help">Auto compares bright/dark foreground masks and uses the strongest round-object population. The default circularity is intentionally tolerant of pixel-grid boundaries in dense packed droplets. Detection analyzes an isotropically scaled copy, then maps measurements to original pixels; border-touching objects remain excluded.</div>
+    <div id="detectionDiagnostics" class="status-line" aria-live="polite">Detection not run</div>
   </div>
 
   <div class="section-title">Channels & batch</div>

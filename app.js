@@ -14,6 +14,7 @@
   const MAX_DISPLAY_SIDE = 4096;
   const MAX_DISPLAY_PIXELS = 12000000;
   const ROI_RADIUS_FRACTION = analysisCore.ROI_RADIUS_FRACTION;
+  const DETECTION_DEFAULTS = analysisCore.DEFAULT_DETECTION_SETTINGS || {minDiameterPx: 10, maxDiameterPx: 400, minCircularity: .4, smoothing: 2, polarity: 'auto', autoThreshold: true, threshold: 128};
   const state = {
     images: [], index: -1, busy: false, jobPhase: null, activeJob: 0, detectTimer: null, pendingDetect: false, pendingRemeasure: false, batch: null, lastBatchReport: [],
     tool: 'pan', drag: null, calibration: null, measure: null, selectedDropletId: null,
@@ -100,8 +101,8 @@
       channels, detectionChannelId: detection, displayChannelId: detection, measuredChannelIds: channels.map(channel => channel.id),
       selectedFrame: {z: 0, t: 0}, mappingResolved: !dataset.ambiguous && dataset.mappingValid !== false, detections: [], measurementRows: {}, analyzed: false,
       stale: false, analysisRevision: 0, lastCompletedRevision: 0, completedConfigKey: null, detectionReviewKey: null, detectionRecipeHash: null, reviewArchive: [], warnings: [...(dataset.provenance?.warnings || [])],
-      calibration: dataset.pixelSizeUm?.x && dataset.pixelSizeUm?.y ? {xUmPerPx: dataset.pixelSizeUm.x, yUmPerPx: dataset.pixelSizeUm.y, source: 'metadata'} : null,
-      settings: {minDiameterPx: 20, maxDiameterPx: 400, minCircularity: .65, smoothing: 2, polarity: 'auto', autoThreshold: true, threshold: 128},
+      calibration: dataset.pixelSizeUm?.x && dataset.pixelSizeUm?.y ? {xUmPerPx: dataset.pixelSizeUm.x, yUmPerPx: dataset.pixelSizeUm.y, source: dataset.pixelSizeUm.source || 'metadata'} : null,
+      settings: {...DETECTION_DEFAULTS},
       displayRanges: {}, externalChannels: [], colorComponents: [], intensityChannelId: detection, selectedDropletId: null
     };
   }
@@ -320,17 +321,20 @@
   function syncSettingsFromUi(session) {
     const previous = session.settings;
     const numberFrom = (id, fallback) => { const value = Number($('#' + id)?.value); return Number.isFinite(value) ? value : fallback; };
-    const minDiameterPx = Math.max(1, numberFrom('minDiameter', previous.minDiameterPx || 20));
-    const maxDiameterPx = Math.max(minDiameterPx, numberFrom('maxDiameter', previous.maxDiameterPx || 400));
-    const minCircularity = Math.max(.2, Math.min(.98, numberFrom('circularity', previous.minCircularity ?? .65)));
-    const smoothing = Math.max(0, Math.min(5, Math.round(numberFrom('smoothing', previous.smoothing ?? 2))));
-    const threshold = Math.max(0, Math.min(255, numberFrom('threshold', previous.threshold ?? 128)));
-    session.settings = {minDiameterPx, maxDiameterPx, minCircularity, smoothing, polarity: previous.polarity || 'auto', autoThreshold: Boolean($('#autoThreshold')?.checked), threshold};
-    $('#minDiameter').value = minDiameterPx; $('#maxDiameter').value = maxDiameterPx; $('#circularity').value = minCircularity; $('#smoothing').value = smoothing; $('#threshold').value = threshold;
+    session.settings = analysisCore.normalizeDetectionSettings({
+      ...previous,
+      minDiameterPx: numberFrom('minDiameter', previous.minDiameterPx ?? DETECTION_DEFAULTS.minDiameterPx),
+      maxDiameterPx: numberFrom('maxDiameter', previous.maxDiameterPx ?? DETECTION_DEFAULTS.maxDiameterPx),
+      minCircularity: numberFrom('circularity', previous.minCircularity ?? DETECTION_DEFAULTS.minCircularity),
+      smoothing: numberFrom('smoothing', previous.smoothing ?? DETECTION_DEFAULTS.smoothing),
+      autoThreshold: Boolean($('#autoThreshold')?.checked),
+      threshold: numberFrom('threshold', previous.threshold ?? DETECTION_DEFAULTS.threshold)
+    });
+    $('#minDiameter').value = session.settings.minDiameterPx; $('#maxDiameter').value = session.settings.maxDiameterPx; $('#circularity').value = session.settings.minCircularity; $('#smoothing').value = session.settings.smoothing; $('#threshold').value = session.settings.threshold;
   }
 
   function syncUiFromSettings(session) {
-    const settings = session.settings;
+    const settings = session.settings = analysisCore.normalizeDetectionSettings(session.settings);
     $('#minDiameter').value = settings.minDiameterPx; $('#maxDiameter').value = settings.maxDiameterPx; $('#circularity').value = settings.minCircularity; $('#circularity').nextElementSibling;
     $('#circVal').textContent = Number(settings.minCircularity).toFixed(2); $('#smoothing').value = settings.smoothing; $('#smoothVal').textContent = `${settings.smoothing} px`; $('#autoThreshold').checked = settings.autoThreshold; $('#threshold').value = settings.threshold; $('#threshold').disabled = settings.autoThreshold; $('#thresholdVal').textContent = settings.autoThreshold ? 'auto' : settings.threshold;
     $$('#polaritySwitch button').forEach(button => button.classList.toggle('active', button.dataset.v === settings.polarity));
@@ -707,9 +711,10 @@
       if (!analysis.candidates.length) { analysis = analyzeAdaptive(gray, width, height, polarity, minDiameter, maxDiameter, minCircularity); method = 'adaptive'; }
       candidates = analysis.candidates; mask = analysis.mask;
     }
-    let grayMin = 255, grayMax = 0;
+    let grayMin = 255, grayMax = 0, maskPixels = 0;
     for (const value of gray) { grayMin = Math.min(grayMin, value); grayMax = Math.max(grayMax, value); }
-    return {candidates, threshold, polarity, method, mask, maskWidth: width, maskHeight: height, contrastRange: [grayMin, grayMax], source: {width: plane.width, height: plane.height, scaledWidth: width, scaledHeight: height, scaleX, scaleY, channelId}};
+    for (const value of mask) maskPixels += value ? 1 : 0;
+    return {candidates, threshold, polarity, method, mask, maskWidth: width, maskHeight: height, maskFraction: mask.length ? maskPixels / mask.length : 0, contrastRange: [grayMin, grayMax], source: {width: plane.width, height: plane.height, scaledWidth: width, scaledHeight: height, scaleX, scaleY, channelId}};
   }
 
   function stableMergeDetections(previous, candidates, source, archive = [], recipeHash = null) {
@@ -793,7 +798,7 @@
       session.reviewArchive = allArchived.filter(item => item.archiveKey !== archiveKey || !merged.matchedArchive.has(item))
         .concat(merged.unmatched.map(item => ({...item, archiveKey, recipeHash: session.detectionRecipeHash}))).slice(-1000);
       session.detectionReviewKey = archiveKey; session.detectionRecipeHash = recipeHash;
-      session.detectionSource = result.source; session.detectedPolarity = result.polarity; session.detectedThreshold = result.threshold; session.detectedMethod = result.method;
+      session.detectionSource = result.source; session.detectedPolarity = result.polarity; session.detectedThreshold = result.threshold; session.detectedMethod = result.method; session.detectionMaskFraction = result.maskFraction;
       session.segmentationMask = result.mask; session.segmentationMaskWidth = result.maskWidth; session.segmentationMaskHeight = result.maskHeight; session.segmentationMaskCanvas = makeMaskCanvas(result.mask, result.maskWidth, result.maskHeight);
       session.noDetectionReason = result.candidates.length ? null : result.contrastRange[0] === result.contrastRange[1]
         ? 'No candidates: the selected detection plane is constant after display-range normalization. Choose another channel or inspect the source image.'
@@ -906,6 +911,20 @@
     const session = current(), unit = rawUnitLabel(session, channelById(session, $('#summaryChannel')?.value || session?.intensityChannelId)); $('#rangeLabel').textContent = `${fmt(min, 1)}–${fmt(max, 1)} ${unit}`;
   }
 
+  function renderDetectionDiagnostics(session) {
+    const box = $('#detectionDiagnostics');
+    if (!box) return;
+    if (!session || !session.analyzed || !session.detectionSource) {
+      box.textContent = 'Detection not run';
+      box.className = 'status-line';
+      return;
+    }
+    const threshold = Number.isFinite(session.detectedThreshold) ? `threshold ${fmt(session.detectedThreshold, 0)}/255` : 'threshold —';
+    const foreground = Number.isFinite(session.detectionMaskFraction) ? `foreground ${(session.detectionMaskFraction * 100).toFixed(1)}%` : 'foreground —';
+    box.textContent = `${session.detectedPolarity || 'auto'} · ${session.detectedMethod || 'segmentation'} · ${threshold} · ${foreground} · ${session.detections.length} candidates`;
+    box.className = `status-line ${session.noDetectionReason ? 'warn' : 'ready'}`;
+  }
+
   function renderDetail(session, droplet) {
     const card = $('#dropletDetail'), grid = $('#detailGrid'); if (!card || !grid) return;
     if (!droplet) { card.hidden = true; grid.replaceChildren(); return; }
@@ -925,6 +944,7 @@
     if (!session) {
       ['countStat', 'meanStat', 'medianStat', 'cvStat'].forEach(id => { $('#' + id).textContent = '—'; }); $('#resultPill').textContent = 'No analysis'; $('#resultBody').innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;padding:22px">No droplets detected</td></tr>'; $('#resultStatus').textContent = 'No dataset loaded'; ['csvBtn', 'jsonBtn', 'pngBtn', 'copyBtn', 'includeAllBtn'].forEach(id => $('#' + id).disabled = true); drawHistogram([]); return;
     }
+    renderDetectionDiagnostics(session);
     renderStats(session); updateSummaryChannel(session);
     const channels = allChannels(session).filter(channel => session.measuredChannelIds.includes(channel.id)), body = $('#resultBody'), colSpan = 3 + channels.length;
     $('#resultPill').textContent = session.stale ? 'Results stale' : `${session.detections.length} candidate${session.detections.length === 1 ? '' : 's'}`;
@@ -944,7 +964,7 @@
 
   function resetDetection() {
     const session = current(); if (!session || state.busy) return;
-    session.detections = []; session.measurementRows = {}; session.reviewArchive = []; session.segmentationMask = null; session.segmentationMaskCanvas = null; session.detectedMethod = null; session.analyzed = false; session.stale = false; session.analysisRevision++; session.selectedDropletId = null; updateResults(); renderOverlay(); showPhase('Ready to detect', '');
+    session.detections = []; session.measurementRows = {}; session.reviewArchive = []; session.segmentationMask = null; session.segmentationMaskCanvas = null; session.detectionSource = null; session.detectedPolarity = null; session.detectedThreshold = null; session.detectionMaskFraction = null; session.detectedMethod = null; session.analyzed = false; session.stale = false; session.analysisRevision++; session.selectedDropletId = null; updateResults(); renderOverlay(); showPhase('Ready to detect', '');
   }
 
   function restoreExclusions() {
